@@ -1,0 +1,11 @@
+[package]
+name = "hickory-recursive"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hickory-resolver = "0.24.1"
+tokio = { version = "1.38.0", features = ["full"]}
+futures-util = "0.3.30"
+anyhow = "1.0.86"
+rand = "0.8.5"
