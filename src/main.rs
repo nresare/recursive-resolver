@@ -13,9 +13,10 @@ use hickory_resolver::Name;
 use anyhow::Result;
 use hickory_resolver::proto::rr::RecordType;
 
+mod lookup;
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Hello, world!");
     let ns = build_nameserver()?;
     let query = Query::query(
         Name::parse("stacey.resare.com", None)?,
@@ -26,7 +27,7 @@ async fn main() -> Result<()> {
 }
 
 fn build_nameserver() -> Result<NameServer<GenericConnector<TokioRuntimeProvider>>> {
-    let socket_addr: SocketAddr = "8.8.8.8:53".parse()?;
+    let socket_addr: SocketAddr = "192.168.168.1:53".parse()?;
     let config = NameServerConfig {
         socket_addr, protocol: Protocol::Udp,
         tls_dns_name: None,
@@ -42,7 +43,7 @@ fn build_nameserver() -> Result<NameServer<GenericConnector<TokioRuntimeProvider
 
 async fn lookup(query: Query, ns: NameServer<GenericConnector<TokioRuntimeProvider>>) -> Result<DnsResponse, ResolveError> {
     let options = DnsRequestOptions::default();
-    let request: DnsRequest = DnsRequest::new(build_message(query, options), options);
+    let request: DnsRequest = DnsRequest::new(build_message(query), options);
     let future = ns.send(request)
         .into_future();
 
@@ -50,14 +51,13 @@ async fn lookup(query: Query, ns: NameServer<GenericConnector<TokioRuntimeProvid
         .await.expect("Can't deal with empty results for now")
 }
 
-fn build_message(query: Query, options: DnsRequestOptions) -> Message {
+fn build_message(query: Query) -> Message {
     // build the message
     let mut message: Message = Message::new();
     // TODO: This is not the final ID, it's actually set in the poll method of DNS future
     //  should we just remove this?
     let id: u16 = rand::random();
-    let m = message
-        .add_query(query)
+    message.add_query(query)
         .set_id(id)
         .set_message_type(MessageType::Query)
         .set_op_code(OpCode::Query)

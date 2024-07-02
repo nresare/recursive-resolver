@@ -220,6 +220,7 @@ dependencies = [
  "hickory-resolver",
  "rand",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
