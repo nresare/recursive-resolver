@@ -13,7 +13,8 @@ use hickory_resolver::proto::xfer::{DnsRequest, DnsRequestOptions, DnsResponse};
 use hickory_resolver::proto::DnsHandle;
 use hickory_resolver::Name;
 
-mod lookup;
+mod backend;
+mod resolver;
 
 #[tokio::main]
 async fn main() -> Result<()> {

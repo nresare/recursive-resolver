@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::Result;
+use async_trait::async_trait;
 use hickory_resolver::proto::op::{Message, Query};
 use hickory_resolver::proto::rr::RecordType;
 use hickory_resolver::proto::serialize::binary::BinDecodable;
@@ -15,11 +16,12 @@ const DEFAULT_TARGET_PORT: u16 = 53;
 
 /// A backend represents something that can pass on queries and potentially return responses
 /// from the remote that the query was sent to.
-trait Backend {
+#[async_trait]
+pub trait Backend {
     async fn query(&self, target: IpAddr, name: Name, record_type: RecordType) -> Result<Message>;
 }
 
-struct UdpBackend {
+pub struct UdpBackend {
     target_port: u16,
 }
 
@@ -44,6 +46,7 @@ async fn connect(target: IpAddr, target_port: u16) -> Result<UdpSocket> {
     Ok(socket)
 }
 
+#[async_trait]
 impl Backend for UdpBackend {
     async fn query(&self, target: IpAddr, name: Name, record_type: RecordType) -> Result<Message> {
         let socket = connect(target, self.target_port).await?;
@@ -81,8 +84,8 @@ mod test {
     use tokio::net::UdpSocket;
     use tokio::task::JoinHandle;
 
-    use crate::lookup::Backend;
-    use crate::lookup::{UdpBackend, MAX_RECEIVE_BUFFER_SIZE};
+    use crate::backend::Backend;
+    use crate::backend::{UdpBackend, MAX_RECEIVE_BUFFER_SIZE};
 
     async fn verify_request_send_response() -> Result<(u16, JoinHandle<Result<()>>)> {
         let server_socket =
