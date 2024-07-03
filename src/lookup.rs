@@ -44,7 +44,6 @@ impl Backend for UdpBackend {
         let socket = connect(target, self.target_port).await?;
 
         let request = make_query(name, record_type);
-        println!("Req: {:?}", request);
         socket.send(request.to_vec()?.as_slice()).await?;
         let mut buf = vec![0u8; MAX_RECEIVE_BUFFER_SIZE];
         let read_count = socket.recv(&mut buf).await?;
@@ -67,9 +66,13 @@ fn make_query(name: Name, record_type: RecordType) -> Message {
 #[cfg(test)]
 mod test {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
+    use std::str::FromStr;
     use anyhow::Result;
-    use hickory_resolver::proto::rr::RecordType;
+    use hickory_resolver::Name;
+    use hickory_resolver::proto::op::{Message, ResponseCode};
+    use hickory_resolver::proto::rr::{RData, Record, RecordType};
+    use hickory_resolver::proto::rr::rdata::A;
+    use hickory_resolver::proto::serialize::binary::BinDecodable;
     use tokio::net::UdpSocket;
     use tokio::task::JoinHandle;
 
@@ -82,10 +85,25 @@ mod test {
         let handler = tokio::spawn(async move {
             let mut buf = vec![0u8; MAX_RECEIVE_BUFFER_SIZE];
             let (read_count, peer) = server_socket.recv_from(&mut buf).await?;
-            server_socket.send_to(&buf[..read_count], peer).await?;
+            let req = Message::from_bytes(&buf[..read_count])?;
+            let resp = make_response(req);
+            server_socket.send_to(&resp.to_vec()?.as_slice(), peer).await?;
             Ok(())
         });
         Ok((port, handler))
+    }
+
+    fn make_response(request: Message) -> Message {
+        let mut message = Message::new();
+        message.add_query(request.query().unwrap().clone());
+        message.set_id(request.id());
+        message.set_response_code(ResponseCode::NoError);
+        message.add_answer(Record::from_rdata(
+            Name::from_str("stacey.noa.re.").unwrap(),
+            600,
+            RData::A(A::new(172, 104, 148 ,31))
+        ));
+        message
     }
 
     #[tokio::test]
@@ -98,8 +116,13 @@ mod test {
             "stacey.noa.re".parse()?,
             RecordType::A
         ).await?;
-        print!("{:?}", message);
-
+        assert_eq!(message.response_code(), ResponseCode::NoError);
+        let answers = message.answers();
+        let expected = Record::from_rdata(
+            Name::from_str("stacey.noa.re.")?,
+            600,
+            RData::A("172.104.148.31".parse()?));
+        assert_eq!(answers, [expected]);
         handle.await??;
         Ok(())
     }
