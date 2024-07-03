@@ -1,10 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::Result;
-use hickory_resolver::Name;
 use hickory_resolver::proto::op::{Message, Query};
 use hickory_resolver::proto::rr::RecordType;
 use hickory_resolver::proto::serialize::binary::BinDecodable;
+use hickory_resolver::Name;
 use tokio::net::UdpSocket;
 
 /// Max size for the UDP receive buffer as recommended by
@@ -25,15 +25,20 @@ struct UdpBackend {
 
 impl UdpBackend {
     pub fn new() -> Self {
-        UdpBackend { target_port: DEFAULT_TARGET_PORT }
+        UdpBackend {
+            target_port: DEFAULT_TARGET_PORT,
+        }
     }
 }
 
 async fn connect(target: IpAddr, target_port: u16) -> Result<UdpSocket> {
-    let local = SocketAddr::new(match target {
-        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-    }, 0);
+    let local = SocketAddr::new(
+        match target {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        },
+        0,
+    );
     let socket = UdpSocket::bind(local).await?;
     socket.connect(SocketAddr::new(target, target_port)).await?;
     Ok(socket)
@@ -65,29 +70,32 @@ fn make_query(name: Name, record_type: RecordType) -> Message {
 
 #[cfg(test)]
 mod test {
+    use anyhow::Result;
+    use hickory_resolver::proto::op::{Message, ResponseCode};
+    use hickory_resolver::proto::rr::rdata::A;
+    use hickory_resolver::proto::rr::{RData, Record, RecordType};
+    use hickory_resolver::proto::serialize::binary::BinDecodable;
+    use hickory_resolver::Name;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::str::FromStr;
-    use anyhow::Result;
-    use hickory_resolver::Name;
-    use hickory_resolver::proto::op::{Message, ResponseCode};
-    use hickory_resolver::proto::rr::{RData, Record, RecordType};
-    use hickory_resolver::proto::rr::rdata::A;
-    use hickory_resolver::proto::serialize::binary::BinDecodable;
     use tokio::net::UdpSocket;
     use tokio::task::JoinHandle;
 
-    use crate::lookup::{MAX_RECEIVE_BUFFER_SIZE, UdpBackend};
     use crate::lookup::Backend;
+    use crate::lookup::{UdpBackend, MAX_RECEIVE_BUFFER_SIZE};
 
     async fn verify_request_send_response() -> Result<(u16, JoinHandle<Result<()>>)> {
-        let server_socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
+        let server_socket =
+            UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
         let port = server_socket.local_addr()?.port();
         let handler = tokio::spawn(async move {
             let mut buf = vec![0u8; MAX_RECEIVE_BUFFER_SIZE];
             let (read_count, peer) = server_socket.recv_from(&mut buf).await?;
             let req = Message::from_bytes(&buf[..read_count])?;
             let resp = make_response(req);
-            server_socket.send_to(&resp.to_vec()?.as_slice(), peer).await?;
+            server_socket
+                .send_to(&resp.to_vec()?.as_slice(), peer)
+                .await?;
             Ok(())
         });
         Ok((port, handler))
@@ -101,7 +109,7 @@ mod test {
         message.add_answer(Record::from_rdata(
             Name::from_str("stacey.noa.re.").unwrap(),
             600,
-            RData::A(A::new(172, 104, 148 ,31))
+            RData::A(A::new(172, 104, 148, 31)),
         ));
         message
     }
@@ -111,17 +119,20 @@ mod test {
         let (port, handle) = verify_request_send_response().await?;
 
         let b = UdpBackend { target_port: port };
-        let message = b.query(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            "stacey.noa.re".parse()?,
-            RecordType::A
-        ).await?;
+        let message = b
+            .query(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                "stacey.noa.re".parse()?,
+                RecordType::A,
+            )
+            .await?;
         assert_eq!(message.response_code(), ResponseCode::NoError);
         let answers = message.answers();
         let expected = Record::from_rdata(
             Name::from_str("stacey.noa.re.")?,
             600,
-            RData::A("172.104.148.31".parse()?));
+            RData::A("172.104.148.31".parse()?),
+        );
         assert_eq!(answers, [expected]);
         handle.await??;
         Ok(())
