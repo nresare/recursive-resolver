@@ -1,5 +1,5 @@
 [package]
-name = "hickory-recursive"
+name = "recursive-resolver"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,5 +9,8 @@ tokio = { version = "1.38.0", features = ["full"]}
 futures-util = "0.3.30"
 anyhow = "1.0.86"
 rand = "0.8.5"
-tracing = "0.1.40"
+tracing = { version = "0.1.40", features = ["async-await"] }
 async-trait = "0.1.80"
+tracing-subscriber = "0.3.18"
+clap = { version = "4.5.8", features = ["derive"] }
+hickory-proto = "0.24.1"

@@ -18,7 +18,7 @@ const DEFAULT_TARGET_PORT: u16 = 53;
 /// from the remote that the query was sent to.
 #[async_trait]
 pub trait Backend {
-    async fn query(&self, target: IpAddr, name: Name, record_type: RecordType) -> Result<Message>;
+    async fn query(&self, target: IpAddr, name: &Name, record_type: RecordType) -> Result<Message>;
 }
 
 pub struct UdpBackend {
@@ -42,13 +42,13 @@ async fn connect(target: IpAddr, target_port: u16) -> Result<UdpSocket> {
         0,
     );
     let socket = UdpSocket::bind(local).await?;
-    socket.connect(SocketAddr::new(target, target_port)).await?;
+    socket.connect(SocketAddr::new(target.clone(), target_port)).await?;
     Ok(socket)
 }
 
 #[async_trait]
 impl Backend for UdpBackend {
-    async fn query(&self, target: IpAddr, name: Name, record_type: RecordType) -> Result<Message> {
+    async fn query(&self, target: IpAddr, name: &Name, record_type: RecordType) -> Result<Message> {
         let socket = connect(target, self.target_port).await?;
 
         let request = make_query(name, record_type);
@@ -60,9 +60,9 @@ impl Backend for UdpBackend {
     }
 }
 
-fn make_query(name: Name, record_type: RecordType) -> Message {
+fn make_query(name: &Name, record_type: RecordType) -> Message {
     let mut query = Query::new();
-    query.set_name(name).set_query_type(record_type);
+    query.set_name(name.clone()).set_query_type(record_type);
     let mut message = Message::new();
     message.add_query(query);
     message.set_recursion_desired(true);
@@ -125,7 +125,7 @@ mod test {
         let message = b
             .query(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
-                "stacey.noa.re".parse()?,
+                &"stacey.noa.re".parse()?,
                 RecordType::A,
             )
             .await?;
