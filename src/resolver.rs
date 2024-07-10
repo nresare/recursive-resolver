@@ -1,16 +1,16 @@
 use std::net::IpAddr;
 
 use anyhow::Result;
-use hickory_resolver::Name;
 use hickory_resolver::proto::op::{Message, ResponseCode};
 use hickory_resolver::proto::rr::{Record, RecordType};
+use hickory_resolver::Name;
 
 use crate::backend::{Backend, UdpBackend};
 use crate::resolver::QueryResponse::{Answer, Referral};
 use crate::selector::RootsProvider;
 
 pub(crate) struct RecursiveResolver {
-    backend: Box<dyn Backend>,
+    backend: Box<dyn Backend + Sync + Send>,
     roots: Vec<IpAddr>,
 }
 
@@ -26,26 +26,34 @@ impl RecursiveResolver {
     }
 
     //#[instrument]
-    pub(crate) async fn resolve(&self, name: &Name, record_type: RecordType) -> Result<Vec<Record>> {
+    pub(crate) async fn resolve(
+        &self,
+        name: &Name,
+        record_type: RecordType,
+    ) -> Result<Vec<Record>> {
         let mut candidates = RootsProvider::new(&self.roots);
         loop {
-            let target = candidates.next().ok_or_else(|| anyhow::Error::msg("no more ns's to try"))?;
+            let target = candidates
+                .next()
+                .ok_or_else(|| anyhow::Error::msg("no more ns's to try"))?;
             let response = self.resolve_inner(target, &name, record_type).await;
             match response {
                 QueryResponse::Failure(e) => return Err(e),
                 QueryResponse::NxDomain => todo!(),
-                Referral(_, _) => {
-                }
-                Answer(answers) => return Ok(answers)
+                Referral(_, _) => {}
+                Answer(answers) => return Ok(answers),
             }
 
-
-            return Err(anyhow::Error::msg("not here yet"))
+            return Err(anyhow::Error::msg("not here yet"));
         }
     }
 
-
-    async fn resolve_inner(&self, target: IpAddr, name: &Name, record_type: RecordType) -> QueryResponse {
+    async fn resolve_inner(
+        &self,
+        target: IpAddr,
+        name: &Name,
+        record_type: RecordType,
+    ) -> QueryResponse {
         match self.backend.query(target, name, record_type).await {
             Err(e) => QueryResponse::Failure(e),
             Ok(message) => {
@@ -55,14 +63,16 @@ impl RecursiveResolver {
                     if is_final(&message) {
                         Answer(message.answers().to_vec())
                     } else {
-                        Referral(message.name_servers().to_vec(), message.additionals().to_vec())
+                        Referral(
+                            message.name_servers().to_vec(),
+                            message.additionals().to_vec(),
+                        )
                     }
                 }
             }
         }
     }
 }
-
 
 enum QueryResponse {
     /// The Query failed
@@ -73,9 +83,8 @@ enum QueryResponse {
     /// name, and returned some Authority records and potentially also Glue records
     Referral(Vec<Record>, Vec<Record>),
     /// There was an authoritative response with answer records
-    Answer(Vec<Record>)
+    Answer(Vec<Record>),
 }
-
 
 fn is_final(answer: &Message) -> bool {
     answer.header().authoritative() && answer.answers().len() > 0
@@ -95,7 +104,7 @@ mod test {
         assert!(!is_final(&m));
 
         // authoritative, no answer
-        let mut  m = Message::new();
+        let mut m = Message::new();
         m.set_header(*Header::new().set_authoritative(true));
         assert!(!is_final(&m));
 
@@ -107,6 +116,4 @@ mod test {
         m.set_header(*Header::new().set_authoritative(true));
         assert!(is_final(&m));
     }
-
-
 }

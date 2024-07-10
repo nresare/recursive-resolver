@@ -42,7 +42,9 @@ async fn connect(target: IpAddr, target_port: u16) -> Result<UdpSocket> {
         0,
     );
     let socket = UdpSocket::bind(local).await?;
-    socket.connect(SocketAddr::new(target.clone(), target_port)).await?;
+    socket
+        .connect(SocketAddr::new(target.clone(), target_port))
+        .await?;
     Ok(socket)
 }
 

@@ -1,16 +1,16 @@
+use crate::resolver::RecursiveResolver;
 use anyhow::Result;
 use clap::Parser;
-use hickory_resolver::Name;
 use hickory_resolver::proto::rr::RecordType;
+use hickory_resolver::Name;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
-use crate::resolver::RecursiveResolver;
 
 mod backend;
 mod resolver;
 mod selector;
 
-#[derive(Parser,Debug)]
+#[derive(Parser, Debug)]
 struct Cli {
     #[arg(required = true)]
     name: Name,
