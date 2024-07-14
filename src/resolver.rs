@@ -7,7 +7,7 @@ use hickory_resolver::Name;
 
 use crate::backend::{Backend, UdpBackend};
 use crate::resolver::QueryResponse::{Answer, Referral};
-use crate::selector::RootsProvider;
+use crate::selector::{IpProvider, NsProvider, RootsProvider};
 
 pub(crate) struct RecursiveResolver {
     backend: Box<dyn Backend + Sync + Send>,
@@ -31,20 +31,18 @@ impl RecursiveResolver {
         name: &Name,
         record_type: RecordType,
     ) -> Result<Vec<Record>> {
-        let mut candidates = RootsProvider::new(&self.roots);
+        let mut candidates: Box<dyn IpProvider + Send> = Box::new(RootsProvider::new(&self.roots));
         loop {
             let target = candidates
-                .next()
+                .next().await?
                 .ok_or_else(|| anyhow::Error::msg("no more ns's to try"))?;
             let response = self.resolve_inner(target, &name, record_type).await;
             match response {
                 QueryResponse::Failure(e) => return Err(e),
                 QueryResponse::NxDomain => todo!(),
-                Referral(_, _) => {}
+                Referral(ns, glue) => candidates = Box::new(NsProvider::new(ns, glue, &self)),
                 Answer(answers) => return Ok(answers),
             }
-
-            return Err(anyhow::Error::msg("not here yet"));
         }
     }
 
@@ -115,5 +113,10 @@ mod test {
 
         m.set_header(*Header::new().set_authoritative(true));
         assert!(is_final(&m));
+    }
+
+    #[test]
+    fn test_resolve() {
+        
     }
 }

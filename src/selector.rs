@@ -2,15 +2,15 @@ use std::net::IpAddr;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hickory_resolver::proto::rr::{RData, Record, RecordType};
 use hickory_resolver::Name;
+use hickory_resolver::proto::rr::{RData, Record, RecordType};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
 use crate::resolver::RecursiveResolver;
 
 #[async_trait]
-trait IpProvider {
+pub trait IpProvider {
     async fn next(&mut self) -> Result<Option<IpAddr>>;
 }
 
@@ -26,33 +26,31 @@ impl<'a> RootsProvider<'a> {
     }
 }
 
-impl Iterator for RootsProvider<'_> {
-    type Item = IpAddr;
+#[async_trait]
+impl IpProvider for RootsProvider<'_> {
 
-    fn next(&mut self) -> Option<Self::Item> {
-        self.shuffled_pointers.pop().map(|r| r.clone())
+    async fn next(&mut self) -> Result<Option<IpAddr>> {
+        Ok(self.shuffled_pointers.pop().map(|r| r.clone()))
     }
 }
 
-struct NsProvider<'a> {
-    nameservers: &'a Vec<Record>,
-    glue: &'a Vec<Record>,
-    shuffled_nameservers: Vec<&'a Record>,
+pub(crate) struct NsProvider<'a> {
+    shuffled_nameservers: Vec<Record>,
+    glue: Vec<Record>,
     resolver: &'a RecursiveResolver,
 }
 
 impl<'a> NsProvider<'a> {
-    fn new(
-        nameservers: &'a Vec<Record>,
-        glue: &'a Vec<Record>,
+    pub(crate) fn new(
+        nameservers: Vec<Record>,
+        glue: Vec<Record>,
         resolver: &'a RecursiveResolver,
     ) -> Self {
-        let mut shuffled_nameservers: Vec<&Record> = nameservers.iter().collect();
+        let mut shuffled_nameservers = nameservers.clone();
         shuffled_nameservers.shuffle(&mut thread_rng());
         NsProvider {
-            nameservers,
-            glue,
             shuffled_nameservers,
+            glue,
             resolver,
         }
     }
@@ -77,7 +75,7 @@ impl<'a> IpProvider for NsProvider<'a> {
     async fn next(&mut self) -> Result<Option<IpAddr>> {
         match self.shuffled_nameservers.pop() {
             None => Ok(None),
-            Some(ns) => Ok(Some(self.get_ip(ns, self.glue).await?)),
+            Some(ns) => Ok(Some(self.get_ip(&ns, &self.glue).await?)),
         }
     }
 }
@@ -109,43 +107,28 @@ fn get_ns_name(record: &Record) -> Result<&Name> {
 
 #[cfg(test)]
 mod tests {
-    use crate::selector::{find_in_glue, RootsProvider};
-    use anyhow::Result;
-    use hickory_resolver::proto::rr::{RData, Record};
-    use hickory_resolver::IntoName;
-    use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
 
+    use anyhow::Result;
     use hickory_proto::rr::rdata::a::A;
+    use hickory_resolver::IntoName;
+    use hickory_resolver::proto::rr::{RData, Record};
 
-    #[test]
-    fn test_iterate() {
-        let addrs = vec![
-            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-        ];
-
-        let provider = RootsProvider::new(&addrs);
-        for ip in provider {
-            println!("{}", ip)
-        }
-    }
+    use crate::selector::find_in_glue;
 
     #[test]
     fn test_find_in_glue() -> Result<()> {
+        let ip0 = "172.104.148.31";
         let glue = vec![
-            record("ns0.resare.com", "172.104.148.31")?,
+            record("ns0.resare.com", ip0)?,
             record("ns1.resare.com", "140.238.85.157")?,
         ];
-
+        let result = find_in_glue(&"ns0.resare.com".into_name()?, &glue);
+        assert_eq!(Some(ip0.parse()?),result);
         Ok(())
     }
 
     fn record(name: impl IntoName, ipv4_addr: &str) -> Result<Record> {
-        let addr: Ipv4Addr = Ipv4Addr::from_str(ipv4_addr)?;
-        let mut r: Record = Record::new();
-        r.set_name(name.into_name()?);
-        r.set_data(Some(RData::A(A(addr))));
-        Ok(r)
+        Ok(Record::from_rdata(name.into_name()?, 0, RData::A(A::from_str(ipv4_addr)?)))
     }
 }
