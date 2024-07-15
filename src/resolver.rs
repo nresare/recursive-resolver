@@ -34,7 +34,8 @@ impl RecursiveResolver {
         let mut candidates: Box<dyn IpProvider + Send> = Box::new(RootsProvider::new(&self.roots));
         loop {
             let target = candidates
-                .next().await?
+                .next()
+                .await?
                 .ok_or_else(|| anyhow::Error::msg("no more ns's to try"))?;
             let response = self.resolve_inner(target, &name, record_type).await;
             match response {
@@ -116,7 +117,5 @@ mod test {
     }
 
     #[test]
-    fn test_resolve() {
-        
-    }
+    fn test_resolve() {}
 }

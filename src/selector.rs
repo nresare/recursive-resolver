@@ -2,8 +2,8 @@ use std::net::IpAddr;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hickory_resolver::Name;
 use hickory_resolver::proto::rr::{RData, Record, RecordType};
+use hickory_resolver::Name;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
@@ -28,7 +28,6 @@ impl<'a> RootsProvider<'a> {
 
 #[async_trait]
 impl IpProvider for RootsProvider<'_> {
-
     async fn next(&mut self) -> Result<Option<IpAddr>> {
         Ok(self.shuffled_pointers.pop().map(|r| r.clone()))
     }
@@ -80,7 +79,7 @@ impl<'a> IpProvider for NsProvider<'a> {
     }
 }
 
-fn find_in_glue(name: &Name, glue: &Vec<Record>) -> Option<IpAddr> {
+fn find_in_glue(name: &Name, glue: &[Record]) -> Option<IpAddr> {
     glue.iter()
         .filter(|r| r.record_type() == RecordType::A)
         .filter(|r| r.name() == name)
@@ -111,8 +110,8 @@ mod tests {
 
     use anyhow::Result;
     use hickory_proto::rr::rdata::a::A;
-    use hickory_resolver::IntoName;
     use hickory_resolver::proto::rr::{RData, Record};
+    use hickory_resolver::IntoName;
 
     use crate::selector::find_in_glue;
 
@@ -124,11 +123,15 @@ mod tests {
             record("ns1.resare.com", "140.238.85.157")?,
         ];
         let result = find_in_glue(&"ns0.resare.com".into_name()?, &glue);
-        assert_eq!(Some(ip0.parse()?),result);
+        assert_eq!(Some(ip0.parse()?), result);
         Ok(())
     }
 
     fn record(name: impl IntoName, ipv4_addr: &str) -> Result<Record> {
-        Ok(Record::from_rdata(name.into_name()?, 0, RData::A(A::from_str(ipv4_addr)?)))
+        Ok(Record::from_rdata(
+            name.into_name()?,
+            0,
+            RData::A(A::from_str(ipv4_addr)?),
+        ))
     }
 }
