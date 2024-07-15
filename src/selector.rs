@@ -19,7 +19,7 @@ pub(crate) struct RootsProvider<'a> {
 }
 
 impl<'a> RootsProvider<'a> {
-    pub(crate) fn new(roots: &'a Vec<IpAddr>) -> Self {
+    pub(crate) fn new(roots: &'a [IpAddr]) -> Self {
         let mut shuffled_pointers: Vec<&IpAddr> = roots.iter().collect();
         shuffled_pointers.shuffle(&mut thread_rng());
         RootsProvider { shuffled_pointers }
@@ -29,7 +29,7 @@ impl<'a> RootsProvider<'a> {
 #[async_trait]
 impl IpProvider for RootsProvider<'_> {
     async fn next(&mut self) -> Result<Option<IpAddr>> {
-        Ok(self.shuffled_pointers.pop().map(|r| r.clone()))
+        Ok(self.shuffled_pointers.pop().copied())
     }
 }
 
@@ -54,7 +54,7 @@ impl<'a> NsProvider<'a> {
         }
     }
     // todo: return all the records, lookup both A and AAAA
-    async fn get_ip(&self, ns: &Record, glue: &Vec<Record>) -> Result<IpAddr> {
+    async fn get_ip(&self, ns: &Record, glue: &[Record]) -> Result<IpAddr> {
         let name = get_ns_name(ns)?;
         if let Some(ip) = find_in_glue(name, glue) {
             return Ok(ip);
@@ -63,7 +63,7 @@ impl<'a> NsProvider<'a> {
         match result.pop() {
             None => Err(anyhow::Error::msg("unexpected empty result")),
             Some(record) => match record.data() {
-                Some(RData::A(a)) => Ok(IpAddr::V4(a.0.clone())),
+                Some(RData::A(a)) => Ok(IpAddr::V4(a.0)),
                 _ => Err(anyhow::Error::msg("no rdata, or wrong type of rdata")),
             },
         }
