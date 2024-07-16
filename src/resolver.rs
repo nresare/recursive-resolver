@@ -1,13 +1,14 @@
 use std::net::IpAddr;
 
-use crate::backend::{Backend, UdpBackend};
-use crate::resolver::QueryResponse::{Answer, Referral};
-use crate::selector::{IpProvider, NsProvider, RootsProvider};
 use anyhow::Result;
 use hickory_resolver::proto::op::{Message, ResponseCode};
 use hickory_resolver::proto::rr::{Record, RecordType};
 use hickory_resolver::Name;
 use tracing::debug;
+
+use crate::backend::{Backend, UdpBackend};
+use crate::resolver::QueryResponse::{Answer, Referral};
+use crate::selector::{IpProvider, NsProvider, RootsProvider};
 
 pub(crate) struct RecursiveResolver {
     backend: Box<dyn Backend + Sync + Send>,
@@ -18,6 +19,16 @@ impl RecursiveResolver {
     pub(crate) fn new() -> Self {
         RecursiveResolver {
             backend: Box::new(UdpBackend::new()),
+            roots: vec![
+                IpAddr::V4("192.36.148.17".parse().unwrap()),
+                //IpAddr::V6("2001:7fe::53".parse().unwrap()),
+            ],
+        }
+    }
+
+    fn from_backend(backend: impl Backend + Send + Sync + 'static) -> Self {
+        RecursiveResolver {
+            backend: Box::new(backend),
             roots: vec![
                 IpAddr::V4("192.36.148.17".parse().unwrap()),
                 //IpAddr::V6("2001:7fe::53".parse().unwrap()),
@@ -94,11 +105,16 @@ fn is_final(answer: &Message) -> bool {
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+    use std::net::IpAddr;
+
     use anyhow::Result;
-    use hickory_proto::rr::RecordType;
+    use async_trait::async_trait;
+    use hickory_proto::rr::{Name, RecordType};
     use hickory_resolver::proto::op::{Header, Message};
     use hickory_resolver::proto::rr::Record;
 
+    use crate::backend::Backend;
     use crate::resolver::{is_final, RecursiveResolver};
 
     #[test]
@@ -123,11 +139,71 @@ mod test {
 
     #[tokio::test]
     async fn test_resolve() -> Result<()> {
-        let resolver = RecursiveResolver::new();
-        let result = resolver
-            .resolve(&"noa.tm".parse()?, RecordType::AAAA)
-            .await?;
-        println!("result: {:?}", result);
+        let resolver = RecursiveResolver::from_backend(FakeBackend::new());
+        let result = resolver.resolve(&"noa.tm".parse()?, RecordType::AAAA).await;
+        assert!(matches!(result, Err(_)));
         Ok(())
+    }
+
+    struct FakeBackend {
+        answers: HashMap<QueryKey, Message>,
+    }
+
+    impl FakeBackend {
+        fn new() -> Self {
+            FakeBackend {
+                answers: HashMap::new(),
+            }
+        }
+        fn add(
+            &mut self,
+            ip: &str,
+            name: &str,
+            record_type: RecordType,
+            answers: Vec<Record>,
+            glue: Vec<Record>,
+        ) -> Result<()> {
+            let key = QueryKey {
+                target: IpAddr::V4(ip.parse()?),
+                name: name.parse()?,
+                record_type,
+            };
+            let mut message = Message::new();
+            message.insert_answers(answers);
+            message.insert_additionals(glue);
+            self.answers.insert(key, message);
+            Ok(())
+        }
+
+        fn get(&self, target: IpAddr, name: Name, record_type: RecordType) -> Option<Message> {
+            let key = QueryKey {
+                target,
+                name,
+                record_type,
+            };
+
+            self.answers.get(&key).map(|v| v.clone())
+        }
+    }
+
+    #[derive(PartialEq, Eq, Hash)]
+    struct QueryKey {
+        target: IpAddr,
+        name: Name,
+        record_type: RecordType,
+    }
+
+    impl QueryKey {}
+
+    #[async_trait]
+    impl Backend for FakeBackend {
+        async fn query(
+            &self,
+            target: IpAddr,
+            name: &Name,
+            record_type: RecordType,
+        ) -> Result<Message> {
+            Err(anyhow::Error::msg("intentionally failing"))
+        }
     }
 }

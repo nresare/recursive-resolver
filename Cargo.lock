@@ -615,6 +615,7 @@ dependencies = [
  "futures-util",
  "hickory-proto",
  "hickory-resolver",
+ "lazy_static",
  "rand",
  "tokio",
  "tracing",
