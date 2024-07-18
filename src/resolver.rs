@@ -26,13 +26,10 @@ impl RecursiveResolver {
         }
     }
 
-    fn from_backend(backend: impl Backend + Send + Sync + 'static) -> Self {
+    fn from_backend(backend: impl Backend + Send + Sync + 'static, roots: Vec<IpAddr>) -> Self {
         RecursiveResolver {
             backend: Box::new(backend),
-            roots: vec![
-                IpAddr::V4("192.36.148.17".parse().unwrap()),
-                //IpAddr::V6("2001:7fe::53".parse().unwrap()),
-            ],
+            roots,
         }
     }
 
@@ -106,14 +103,16 @@ fn is_final(answer: &Message) -> bool {
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
+    use std::marker::Tuple;
     use std::net::IpAddr;
 
     use anyhow::Result;
     use async_trait::async_trait;
-    use hickory_proto::rr::{Name, RecordType};
+    use hickory_proto::rr::{Name, RData, RecordType};
+    use hickory_proto::rr::rdata::NS;
     use hickory_resolver::proto::op::{Header, Message};
     use hickory_resolver::proto::rr::Record;
-
+    use RecordType::AAAA;
     use crate::backend::Backend;
     use crate::resolver::{is_final, RecursiveResolver};
 
@@ -137,10 +136,35 @@ mod test {
         assert!(is_final(&m));
     }
 
+    macro_rules! ns {
+        ($name:expr, $target:expr) => {
+            Record::from_rdata($name.parse()?, 0, RData::NS(NS($target.parse()?)))
+        }
+    }
+
+    macro_rules! result {
+        ($answer:expr, ) => {
+            vec![$answer],
+        };
+    }
+
+    type Result = Tuple<Vec<Record>, Option<Vec<Record>>>;
     #[tokio::test]
     async fn test_resolve() -> Result<()> {
-        let resolver = RecursiveResolver::from_backend(FakeBackend::new());
-        let result = resolver.resolve(&"noa.tm".parse()?, RecordType::AAAA).await;
+        let mut backend = FakeBackend::new();
+        let ns = RData::NS(NS("ns.nic.fr.".parse()?));
+        backend.add("192.168.192.168",
+                    "noa.re",
+                    AAAA,
+                    vec![ns!("re", "ns.nic.fr")],
+                    vec![],
+        )?;
+        let resolver = RecursiveResolver::from_backend(
+            FakeBackend::new(),
+            vec![IpAddr::V4("192.168.192.168".parse()?)]);
+
+
+        let result = resolver.resolve(&"noa.re".parse()?, AAAA).await;
         assert!(matches!(result, Err(_)));
         Ok(())
     }
@@ -163,6 +187,7 @@ mod test {
             answers: Vec<Record>,
             glue: Vec<Record>,
         ) -> Result<()> {
+
             let key = QueryKey {
                 target: IpAddr::V4(ip.parse()?),
                 name: name.parse()?,
@@ -175,10 +200,10 @@ mod test {
             Ok(())
         }
 
-        fn get(&self, target: IpAddr, name: Name, record_type: RecordType) -> Option<Message> {
+        fn get(&self, target: IpAddr, name: &Name, record_type: RecordType) -> Option<Message> {
             let key = QueryKey {
                 target,
-                name,
+                name: name.clone(),
                 record_type,
             };
 
@@ -203,7 +228,9 @@ mod test {
             name: &Name,
             record_type: RecordType,
         ) -> Result<Message> {
-            Err(anyhow::Error::msg("intentionally failing"))
+            Ok(self
+                .get(target, name, record_type)
+                .expect("Could not find the appropriate fake response"))
         }
     }
 }
