@@ -16,4 +16,5 @@ clap = { version = "4.5.8", features = ["derive"] }
 hickory-proto = "0.24.1"
 
 [dev-dependencies]
+ctor = "0.2.8"
 lazy_static = "1.5.0"

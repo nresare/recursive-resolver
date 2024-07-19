@@ -97,7 +97,7 @@ mod test {
             let req = Message::from_bytes(&buf[..read_count])?;
             let resp = make_response(req);
             server_socket
-                .send_to(&resp.to_vec()?.as_slice(), peer)
+                .send_to(resp.to_vec()?.as_slice(), peer)
                 .await?;
             Ok(())
         });

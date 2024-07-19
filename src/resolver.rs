@@ -26,6 +26,7 @@ impl RecursiveResolver {
         }
     }
 
+    #[cfg(test)]
     fn from_backend(backend: impl Backend + Send + Sync + 'static, roots: Vec<IpAddr>) -> Self {
         RecursiveResolver {
             backend: Box::new(backend),
@@ -52,7 +53,7 @@ impl RecursiveResolver {
                 QueryResponse::Failure(e) => return Err(e),
                 QueryResponse::NxDomain => todo!(),
                 Referral(ns, glue) => {
-                    debug!("Received a redirect");
+                    debug!(?ns, "Received a redirect");
                     candidates = Box::new(NsProvider::new(ns, glue, self))
                 }
                 Answer(answers) => return Ok(answers),
@@ -102,18 +103,18 @@ fn is_final(answer: &Message) -> bool {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
-    use std::marker::Tuple;
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv6Addr};
 
     use anyhow::Result;
-    use async_trait::async_trait;
+    use hickory_proto::rr::rdata;
     use hickory_proto::rr::{Name, RData, RecordType};
-    use hickory_proto::rr::rdata::NS;
     use hickory_resolver::proto::op::{Header, Message};
     use hickory_resolver::proto::rr::Record;
-    use RecordType::AAAA;
-    use crate::backend::Backend;
+    use tracing::Level;
+    use tracing_subscriber::FmtSubscriber;
+    use RecordType::{A, AAAA};
+
+    use crate::fake_backend::FakeBackend;
     use crate::resolver::{is_final, RecursiveResolver};
 
     #[test]
@@ -138,99 +139,109 @@ mod test {
 
     macro_rules! ns {
         ($name:expr, $target:expr) => {
-            Record::from_rdata($name.parse()?, 0, RData::NS(NS($target.parse()?)))
-        }
-    }
-
-    macro_rules! result {
-        ($answer:expr, ) => {
-            vec![$answer],
+            Record::from_rdata($name.parse()?, 0, RData::NS(rdata::NS($target.parse()?)))
         };
     }
 
-    type Result = Tuple<Vec<Record>, Option<Vec<Record>>>;
+    macro_rules! a {
+        ($name:expr, $target:expr) => {
+            Record::from_rdata($name.parse()?, 0, RData::A(rdata::A(($target.parse()?))))
+        };
+    }
+
+    macro_rules! aaaa {
+        ($name:expr, $target:expr) => {
+            Record::from_rdata(
+                $name.parse()?,
+                0,
+                RData::AAAA(rdata::AAAA($target.parse()?)),
+            )
+        };
+    }
+
+    macro_rules! referral {
+        ($nameservers:expr) => {{
+            let mut msg = Message::new();
+            msg.insert_name_servers(vec![$nameservers]);
+            msg
+        }};
+        ($nameservers:expr, $glue:expr) => {{
+            let mut msg = Message::new();
+            msg.insert_name_servers(vec![$nameservers]);
+            msg.insert_additionals(vec![$glue]);
+            msg
+        }};
+    }
+
+    macro_rules! answer {
+        ($record:expr) => {{
+            let mut msg = Message::new();
+            let mut header = Header::default();
+            header.set_authoritative(true);
+            msg.set_header(header);
+            msg.insert_answers(vec![$record]);
+            msg
+        }};
+    }
+
     #[tokio::test]
     async fn test_resolve() -> Result<()> {
         let mut backend = FakeBackend::new();
-        let ns = RData::NS(NS("ns.nic.fr.".parse()?));
-        backend.add("192.168.192.168",
-                    "noa.re",
-                    AAAA,
-                    vec![ns!("re", "ns.nic.fr")],
-                    vec![],
+        backend.add(
+            "10.0.0.1",
+            "noa.re",
+            AAAA,
+            referral!(ns!("re", "ns.nic.fr"), a!("ns.nic.fr", "10.0.0.2")),
         )?;
-        let resolver = RecursiveResolver::from_backend(
-            FakeBackend::new(),
-            vec![IpAddr::V4("192.168.192.168".parse()?)]);
 
+        backend.add(
+            "10.0.0.2",
+            "noa.re",
+            AAAA,
+            referral!(ns!["noa.re", "ns0.resare.com"]),
+        )?;
 
-        let result = resolver.resolve(&"noa.re".parse()?, AAAA).await;
-        assert!(matches!(result, Err(_)));
+        backend.add(
+            "10.0.0.1",
+            "ns0.resare.com",
+            A,
+            referral!(
+                ns!("resare.com", "ns0.resare.com"),
+                a!("ns0.resare.com", "10.0.0.3")
+            ),
+        )?;
+
+        // todo: once using glue records is smarter, remove this
+        backend.add(
+            "10.0.0.3",
+            "ns0.resare.com",
+            A,
+            answer!(a!("ns0.resare.com", "10.0.0.3")),
+        )?;
+
+        backend.add("10.0.0.3", "noa.re", AAAA, answer!(aaaa!("noa.re", "::42")))?;
+
+        let resolver =
+            RecursiveResolver::from_backend(backend, vec![IpAddr::V4("10.0.0.1".parse()?)]);
+
+        let result = resolver.resolve(&"noa.re".parse()?, AAAA).await?;
+        let record = result.first().expect("Could not find record in response");
+        assert_eq!(*record.name(), "noa.re".parse::<Name>()?);
+        if let Some(RData::AAAA(rdata::AAAA(addr))) = record.data() {
+            assert_eq!(*addr, "::42".parse::<Ipv6Addr>()?)
+        } else {
+            panic!("Could not find AAAA record in result")
+        }
+
         Ok(())
     }
 
-    struct FakeBackend {
-        answers: HashMap<QueryKey, Message>,
-    }
-
-    impl FakeBackend {
-        fn new() -> Self {
-            FakeBackend {
-                answers: HashMap::new(),
-            }
-        }
-        fn add(
-            &mut self,
-            ip: &str,
-            name: &str,
-            record_type: RecordType,
-            answers: Vec<Record>,
-            glue: Vec<Record>,
-        ) -> Result<()> {
-
-            let key = QueryKey {
-                target: IpAddr::V4(ip.parse()?),
-                name: name.parse()?,
-                record_type,
-            };
-            let mut message = Message::new();
-            message.insert_answers(answers);
-            message.insert_additionals(glue);
-            self.answers.insert(key, message);
-            Ok(())
-        }
-
-        fn get(&self, target: IpAddr, name: &Name, record_type: RecordType) -> Option<Message> {
-            let key = QueryKey {
-                target,
-                name: name.clone(),
-                record_type,
-            };
-
-            self.answers.get(&key).map(|v| v.clone())
-        }
-    }
-
-    #[derive(PartialEq, Eq, Hash)]
-    struct QueryKey {
-        target: IpAddr,
-        name: Name,
-        record_type: RecordType,
-    }
-
-    impl QueryKey {}
-
-    #[async_trait]
-    impl Backend for FakeBackend {
-        async fn query(
-            &self,
-            target: IpAddr,
-            name: &Name,
-            record_type: RecordType,
-        ) -> Result<Message> {
-            Ok(self
-                .get(target, name, record_type)
-                .expect("Could not find the appropriate fake response"))
-        }
+    #[ctor::ctor]
+    fn init() {
+        let subscriber = FmtSubscriber::builder()
+            .with_max_level(Level::DEBUG)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("Could not set global default tracing subscriber");
     }
 }

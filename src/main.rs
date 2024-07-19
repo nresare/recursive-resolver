@@ -7,6 +7,8 @@ use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 mod backend;
+#[cfg(test)]
+mod fake_backend;
 mod resolver;
 mod selector;
 
