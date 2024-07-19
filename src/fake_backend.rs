@@ -4,10 +4,20 @@ use async_trait::async_trait;
 use hickory_proto::op::Message;
 use hickory_proto::rr::{Name, RecordType};
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::net::IpAddr;
+
 
 pub struct FakeBackend {
     answers: HashMap<QueryKey, Message>,
+}
+
+impl Debug for FakeBackend {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeBackend")
+            .field("answer_count", &self.answers.len())
+            .finish()
+    }
 }
 
 impl FakeBackend {

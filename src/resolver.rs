@@ -1,22 +1,24 @@
+use std::fmt::Debug;
 use std::net::IpAddr;
 
 use anyhow::Result;
 use hickory_resolver::proto::op::{Message, ResponseCode};
 use hickory_resolver::proto::rr::{Record, RecordType};
 use hickory_resolver::Name;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use crate::backend::{Backend, UdpBackend};
 use crate::resolver::QueryResponse::{Answer, Referral};
 use crate::selector::{IpProvider, NsProvider, RootsProvider};
 
-pub(crate) struct RecursiveResolver {
+#[derive(Debug)]
+pub struct RecursiveResolver {
     backend: Box<dyn Backend + Sync + Send>,
     roots: Vec<IpAddr>,
 }
 
 impl RecursiveResolver {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         RecursiveResolver {
             backend: Box::new(UdpBackend::new()),
             roots: vec![
@@ -34,8 +36,8 @@ impl RecursiveResolver {
         }
     }
 
-    //#[instrument]
-    pub(crate) async fn resolve(
+    #[instrument]
+    pub async fn resolve(
         &self,
         name: &Name,
         record_type: RecordType,

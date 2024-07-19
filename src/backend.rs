@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::Result;
@@ -17,10 +18,11 @@ const DEFAULT_TARGET_PORT: u16 = 53;
 /// A backend represents something that can pass on queries and potentially return responses
 /// from the remote that the query was sent to.
 #[async_trait]
-pub trait Backend {
+pub trait Backend: Debug {
     async fn query(&self, target: IpAddr, name: &Name, record_type: RecordType) -> Result<Message>;
 }
 
+#[derive(Debug)]
 pub struct UdpBackend {
     target_port: u16,
 }
