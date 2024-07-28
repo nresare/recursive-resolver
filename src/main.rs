@@ -1,8 +1,8 @@
 use crate::resolver::RecursiveResolver;
 use anyhow::Result;
 use clap::Parser;
-use hickory_resolver::proto::rr::RecordType;
-use hickory_resolver::Name;
+use hickory_proto::rr::domain::Name;
+use hickory_proto::rr::RecordType;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
