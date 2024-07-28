@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use anyhow::Result;
+use crate::resolver::ResolutionError;
 use async_trait::async_trait;
 use hickory_proto::op::{Message, Query};
 use hickory_proto::rr::Name;
@@ -19,7 +19,12 @@ const DEFAULT_TARGET_PORT: u16 = 53;
 /// from the remote that the query was sent to.
 #[async_trait]
 pub trait Backend: Debug {
-    async fn query(&self, target: IpAddr, name: &Name, record_type: RecordType) -> Result<Message>;
+    async fn query(
+        &self,
+        target: IpAddr,
+        name: &Name,
+        record_type: RecordType,
+    ) -> Result<Message, ResolutionError>;
 }
 
 #[derive(Debug)]
@@ -33,7 +38,7 @@ impl UdpBackend {
     }
 }
 
-async fn connect(target: IpAddr, target_port: u16) -> Result<UdpSocket> {
+async fn connect(target: IpAddr, target_port: u16) -> Result<UdpSocket, ResolutionError> {
     let local = SocketAddr::new(
         match target {
             IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -48,7 +53,12 @@ async fn connect(target: IpAddr, target_port: u16) -> Result<UdpSocket> {
 
 #[async_trait]
 impl Backend for UdpBackend {
-    async fn query(&self, target: IpAddr, name: &Name, record_type: RecordType) -> Result<Message> {
+    async fn query(
+        &self,
+        target: IpAddr,
+        name: &Name,
+        record_type: RecordType,
+    ) -> Result<Message, ResolutionError> {
         let socket = connect(target, self.target_port).await?;
 
         let request = make_query(name, record_type);
@@ -73,7 +83,6 @@ fn make_query(name: &Name, record_type: RecordType) -> Message {
 
 #[cfg(test)]
 mod test {
-    use anyhow::Result;
     use hickory_proto::op::{Message, ResponseCode};
     use hickory_proto::rr::rdata::A;
     use hickory_proto::rr::{Name, RData, Record, RecordType};
@@ -85,8 +94,11 @@ mod test {
 
     use crate::backend::Backend;
     use crate::backend::{UdpBackend, MAX_RECEIVE_BUFFER_SIZE};
+    use crate::resolver::ResolutionError;
+    use anyhow::Result;
 
-    async fn verify_request_send_response() -> Result<(u16, JoinHandle<Result<()>>)> {
+    async fn verify_request_send_response(
+    ) -> Result<(u16, JoinHandle<Result<(), ResolutionError>>), ResolutionError> {
         let server_socket =
             UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
         let port = server_socket.local_addr()?.port();

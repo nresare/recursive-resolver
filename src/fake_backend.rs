@@ -1,11 +1,14 @@
-use crate::backend::Backend;
-use anyhow::{anyhow, Result};
-use async_trait::async_trait;
-use hickory_proto::op::Message;
-use hickory_proto::rr::{Name, RecordType};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::net::IpAddr;
+
+use async_trait::async_trait;
+use hickory_proto::op::Message;
+use hickory_proto::rr::{Name, RecordType};
+
+use crate::backend::Backend;
+use crate::resolver::ResolutionError;
+use crate::resolver::ResolutionError::ServFail;
 
 pub struct FakeBackend {
     answers: HashMap<QueryKey, Message>,
@@ -27,8 +30,12 @@ impl FakeBackend {
         name: &str,
         record_type: RecordType,
         message: Message,
-    ) -> Result<()> {
-        let key = QueryKey { target: IpAddr::V4(ip.parse()?), name: name.parse()?, record_type };
+    ) -> Result<(), ResolutionError> {
+        let key = QueryKey {
+            target: IpAddr::V4(ip.parse().expect("Failed to parse IP")),
+            name: name.parse()?,
+            record_type,
+        };
         self.answers.insert(key, message);
         Ok(())
     }
@@ -48,8 +55,14 @@ pub struct QueryKey {
 
 #[async_trait]
 impl Backend for FakeBackend {
-    async fn query(&self, target: IpAddr, name: &Name, record_type: RecordType) -> Result<Message> {
-        self.get(target, name, record_type)
-            .ok_or(anyhow!("Could not find response for {name} {record_type} at {target}"))
+    async fn query(
+        &self,
+        target: IpAddr,
+        name: &Name,
+        record_type: RecordType,
+    ) -> Result<Message, ResolutionError> {
+        self.get(target, name, record_type).ok_or(ServFail(format!(
+            "Could not find response for {name} {record_type} at {target}"
+        )))
     }
 }

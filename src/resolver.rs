@@ -1,14 +1,16 @@
 use std::fmt::Debug;
 use std::net::IpAddr;
 
-use anyhow::{anyhow, Result};
+use hickory_proto::error::ProtoError;
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::RecordType::A;
 use hickory_proto::rr::{Name, RData, Record, RecordType};
+use thiserror::Error;
 use tracing::{debug, instrument};
 
 use crate::backend::{Backend, UdpBackend};
 use crate::resolver::QueryResponse::{Answer, Referral};
+use crate::resolver::ResolutionError::ServFail;
 use crate::target::{NsProvider, RootsProvider, Target, TargetProvider};
 
 #[derive(Debug)]
@@ -34,12 +36,27 @@ impl RecursiveResolver {
     }
 
     #[instrument]
-    pub async fn resolve(&self, name: &Name, record_type: RecordType) -> Result<Vec<Record>> {
+    pub async fn resolve(
+        &self,
+        name: &Name,
+        record_type: RecordType,
+    ) -> Result<Vec<Record>, ResolutionError> {
         let mut state = ResolutionState::new(self);
         state.resolve_inner(name, record_type, 1).await
     }
 }
-
+#[derive(Error, Debug)]
+pub enum ResolutionError {
+    // RFC 1035 4.1.1 RCODE 3 "Name Error"
+    #[error("No data exits for this name and record type")]
+    NxDomain,
+    #[error("Server failure {0}")]
+    ServFail(String),
+    #[error("Failure in underlying io")]
+    IOError(#[from] std::io::Error),
+    #[error("Protocol error (likely serde related)")]
+    ProtocolError(#[from] ProtoError),
+}
 pub(crate) struct ResolutionState<'a> {
     resolver: &'a RecursiveResolver,
     seen: Vec<(Name, RecordType)>,
@@ -56,13 +73,16 @@ impl<'a> ResolutionState<'a> {
         name: &Name,
         record_type: RecordType,
         depth: u32,
-    ) -> Result<Vec<Record>> {
+    ) -> Result<Vec<Record>, ResolutionError> {
         if depth > MAX_RECURSION_DEPTH {
-            return Err(anyhow!("Refusing to recurse deeper than {MAX_RECURSION_DEPTH}"));
+            return Err(ServFail(format!(
+                "Refusing to recurse deeper than {}",
+                MAX_RECURSION_DEPTH
+            )));
         }
         let query_key = (name.clone(), record_type);
         if self.seen.contains(&query_key) {
-            return Err(anyhow!("Broken DNS config, seen {:?} twice", query_key));
+            return Err(ServFail(format!("Broken DNS config, seen {:?} twice", query_key)));
         }
         self.seen.push(query_key);
 
@@ -70,8 +90,10 @@ impl<'a> ResolutionState<'a> {
         let mut candidates: Box<dyn TargetProvider + Send> =
             Box::new(RootsProvider::new(&self.resolver.roots));
         loop {
-            let target =
-                candidates.next().await?.ok_or_else(|| anyhow!("no more nameservers to try"))?;
+            let target = candidates
+                .next()
+                .await?
+                .ok_or_else(|| ServFail("no more nameservers to try".to_string()))?;
             let target = self.target_to_ip(target, depth).await?;
             debug!(%target, "Contacting");
             let response = match self.resolver.backend.query(target, name, record_type).await {
@@ -89,7 +111,7 @@ impl<'a> ResolutionState<'a> {
             match response {
                 // todo: in case of failure we should retry with the next target
                 QueryResponse::Failure(e) => return Err(e),
-                QueryResponse::NxDomain => todo!(),
+                QueryResponse::NxDomain => return Err(ResolutionError::NxDomain),
                 Referral(ns, glue) => {
                     debug!(?ns, "Received a redirect");
                     candidates = Box::new(NsProvider::new(ns, glue))
@@ -99,7 +121,11 @@ impl<'a> ResolutionState<'a> {
         }
     }
 
-    async fn target_to_ip(&mut self, target: Target, depth: u32) -> Result<IpAddr> {
+    async fn target_to_ip(
+        &mut self,
+        target: Target,
+        depth: u32,
+    ) -> Result<IpAddr, ResolutionError> {
         match target {
             Target::Ip(ip) => Ok(ip),
             Target::Name(name) => {
@@ -111,7 +137,7 @@ impl<'a> ResolutionState<'a> {
 
 enum QueryResponse {
     /// The Query failed
-    Failure(anyhow::Error),
+    Failure(ResolutionError),
     /// The domain does not exist
     NxDomain,
     /// There was a response, but the queried server was not authoritative for the
@@ -138,7 +164,7 @@ mod test {
     use RecordType::A;
 
     use crate::fake_backend::FakeBackend;
-    use crate::resolver::{is_final, RecursiveResolver};
+    use crate::resolver::{is_final, RecursiveResolver, ResolutionError};
 
     #[test]
     fn test_is_final() {
@@ -237,7 +263,7 @@ mod test {
 
         let result = resolver.resolve(&"ns.a.b".parse()?, A).await;
 
-        if let Err(e) = result {
+        if let Err(ResolutionError::ServFail(e)) = result {
             assert_eq!(format!("{e}"), "Broken DNS config, seen (Name(\"ns.a.b\"), A) twice");
         } else {
             panic!("This resolve() call should fail");
@@ -254,12 +280,12 @@ mod test {
     }
 }
 
-fn first_ip(result: &mut Vec<Record>) -> Result<IpAddr> {
+fn first_ip(result: &mut Vec<Record>) -> Result<IpAddr, ResolutionError> {
     match result.pop() {
-        None => Err(anyhow!("unexpected empty result")),
+        None => Err(ServFail("unexpected empty result".to_string())),
         Some(record) => match record.data() {
             Some(RData::A(a)) => Ok(IpAddr::V4(a.0)),
-            _ => Err(anyhow!("no rdata, or wrong type of rdata")),
+            _ => Err(ServFail("no rdata, or wrong type of rdata".to_string())),
         },
     }
 }

@@ -17,6 +17,7 @@ tracing = { version = "0.1.40", features = ["async-await"] }
 tracing-subscriber = "0.3.18"
 
 clap = { version = "4.5.11", features = ["derive"] }
+thiserror = "1.0.63"
 
 [dev-dependencies]
 ctor = "0.2.8"

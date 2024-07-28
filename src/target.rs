@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 
-use anyhow::{anyhow, Result};
+use crate::resolver::ResolutionError;
+use crate::resolver::ResolutionError::ServFail;
 use async_trait::async_trait;
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use rand::seq::SliceRandom;
@@ -8,7 +9,7 @@ use rand::thread_rng;
 
 #[async_trait]
 pub trait TargetProvider {
-    async fn next(&mut self) -> Result<Option<Target>>;
+    async fn next(&mut self) -> Result<Option<Target>, ResolutionError>;
 }
 
 pub enum Target {
@@ -30,7 +31,7 @@ impl<'a> RootsProvider<'a> {
 
 #[async_trait]
 impl TargetProvider for RootsProvider<'_> {
-    async fn next(&mut self) -> Result<Option<Target>> {
+    async fn next(&mut self) -> Result<Option<Target>, ResolutionError> {
         Ok(self.shuffled_pointers.pop().copied().map(Target::Ip))
     }
 }
@@ -47,7 +48,7 @@ impl NsProvider {
         NsProvider { shuffled_nameservers, glue }
     }
     // todo: return all the records, lookup both A and AAAA
-    async fn get_target(&self, ns: &Record, glue: &[Record]) -> Result<Target> {
+    async fn get_target(&self, ns: &Record, glue: &[Record]) -> Result<Target, ResolutionError> {
         let name = get_ns_name(ns)?;
         if let Some(ip) = find_in_glue(name, glue) {
             return Ok(Target::Ip(ip));
@@ -58,7 +59,7 @@ impl NsProvider {
 
 #[async_trait]
 impl TargetProvider for NsProvider {
-    async fn next(&mut self) -> Result<Option<Target>> {
+    async fn next(&mut self) -> Result<Option<Target>, ResolutionError> {
         match self.shuffled_nameservers.pop() {
             None => Ok(None),
             Some(ns) => Ok(Some(self.get_target(&ns, &self.glue).await?)),
@@ -76,14 +77,14 @@ fn find_in_glue(name: &Name, glue: &[Record]) -> Option<IpAddr> {
         .next()
 }
 
-fn get_ns_name(record: &Record) -> Result<&Name> {
+fn get_ns_name(record: &Record) -> Result<&Name, ResolutionError> {
     if record.record_type() != RecordType::NS {
-        return Err(anyhow!("Record type not NS"));
+        return Err(ServFail("Record type not NS".to_string()));
     }
     match record.data() {
         Some(RData::NS(ns)) => Ok(&ns.0),
-        Some(_) => Err(anyhow::Error::msg("wrong type of rdata")),
-        _ => Err(anyhow!("No rdata")),
+        Some(_) => Err(ServFail("wrong type of rdata".to_string())),
+        _ => Err(ServFail("No rdata".to_string())),
     }
 }
 
