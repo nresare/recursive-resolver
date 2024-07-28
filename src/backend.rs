@@ -3,10 +3,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hickory_resolver::proto::op::{Message, Query};
-use hickory_resolver::proto::rr::RecordType;
-use hickory_resolver::proto::serialize::binary::BinDecodable;
-use hickory_resolver::Name;
+use hickory_proto::op::{Message, Query};
+use hickory_proto::rr::Name;
+use hickory_proto::rr::RecordType;
+use hickory_proto::serialize::binary::BinDecodable;
 use tokio::net::UdpSocket;
 
 /// Max size for the UDP receive buffer as recommended by
@@ -74,11 +74,10 @@ fn make_query(name: &Name, record_type: RecordType) -> Message {
 #[cfg(test)]
 mod test {
     use anyhow::Result;
-    use hickory_resolver::proto::op::{Message, ResponseCode};
-    use hickory_resolver::proto::rr::rdata::A;
-    use hickory_resolver::proto::rr::{RData, Record, RecordType};
-    use hickory_resolver::proto::serialize::binary::BinDecodable;
-    use hickory_resolver::Name;
+    use hickory_proto::op::{Message, ResponseCode};
+    use hickory_proto::rr::rdata::A;
+    use hickory_proto::rr::{Name, RData, Record, RecordType};
+    use hickory_proto::serialize::binary::BinDecodable;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::str::FromStr;
     use tokio::net::UdpSocket;

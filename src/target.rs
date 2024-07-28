@@ -2,8 +2,7 @@ use std::net::IpAddr;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use hickory_resolver::proto::rr::{RData, Record, RecordType};
-use hickory_resolver::Name;
+use hickory_proto::rr::{Name, RData, Record, RecordType};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
@@ -94,8 +93,7 @@ mod tests {
 
     use anyhow::Result;
     use hickory_proto::rr::rdata::a::A;
-    use hickory_resolver::proto::rr::{RData, Record};
-    use hickory_resolver::IntoName;
+    use hickory_proto::rr::{IntoName, RData, Record};
 
     use crate::target::find_in_glue;
 

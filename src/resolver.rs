@@ -2,11 +2,9 @@ use std::fmt::Debug;
 use std::net::IpAddr;
 
 use anyhow::{anyhow, Result};
-use hickory_proto::rr::RData;
+use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::RecordType::A;
-use hickory_resolver::proto::op::{Message, ResponseCode};
-use hickory_resolver::proto::rr::{Record, RecordType};
-use hickory_resolver::Name;
+use hickory_proto::rr::{Name, RData, Record, RecordType};
 use tracing::{debug, instrument};
 
 use crate::backend::{Backend, UdpBackend};
@@ -132,10 +130,9 @@ mod test {
     use std::net::{IpAddr, Ipv4Addr};
 
     use anyhow::Result;
-    use hickory_proto::rr::rdata;
+    use hickory_proto::op::{Header, Message};
+    use hickory_proto::rr::{rdata, Record};
     use hickory_proto::rr::{Name, RData, RecordType};
-    use hickory_resolver::proto::op::{Header, Message};
-    use hickory_resolver::proto::rr::Record;
     use tracing::Level;
     use tracing_subscriber::FmtSubscriber;
     use RecordType::A;
