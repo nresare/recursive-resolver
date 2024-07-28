@@ -1,7 +1,9 @@
 use std::fmt::Debug;
 use std::net::IpAddr;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use hickory_proto::rr::RData;
+use hickory_proto::rr::RecordType::A;
 use hickory_resolver::proto::op::{Message, ResponseCode};
 use hickory_resolver::proto::rr::{Record, RecordType};
 use hickory_resolver::Name;
@@ -9,7 +11,7 @@ use tracing::{debug, instrument};
 
 use crate::backend::{Backend, UdpBackend};
 use crate::resolver::QueryResponse::{Answer, Referral};
-use crate::selector::{IpProvider, NsProvider, RootsProvider};
+use crate::target::{NsProvider, RootsProvider, Target, TargetProvider};
 
 #[derive(Debug)]
 pub struct RecursiveResolver {
@@ -30,59 +32,74 @@ impl RecursiveResolver {
 
     #[cfg(test)]
     fn from_backend(backend: impl Backend + Send + Sync + 'static, roots: Vec<IpAddr>) -> Self {
-        RecursiveResolver {
-            backend: Box::new(backend),
-            roots,
-        }
+        RecursiveResolver { backend: Box::new(backend), roots }
     }
 
     #[instrument]
-    pub async fn resolve(
-        &self,
-        name: &Name,
-        record_type: RecordType,
-    ) -> Result<Vec<Record>> {
-        debug!(hostname = format!("{}", name), "Resolving");
-        let mut candidates: Box<dyn IpProvider + Send> = Box::new(RootsProvider::new(&self.roots));
+    pub async fn resolve(&self, name: &Name, record_type: RecordType) -> Result<Vec<Record>> {
+        let mut state = ResolutionState::new(self);
+        state.resolve_inner(name, record_type, 1).await
+    }
+}
+
+pub(crate) struct ResolutionState<'a> {
+    resolver: &'a RecursiveResolver,
+    seen: Vec<(Name, RecordType)>
+}
+
+const MAX_RECURSION_DEPTH: u32 = 5;
+impl<'a> ResolutionState<'a> {
+    pub(crate) fn new(resolver: &'a RecursiveResolver) -> Self {
+        ResolutionState { resolver, seen: Vec::new() }
+    }
+
+    async fn resolve_inner(&mut self, name: &Name, record_type: RecordType, depth: u32) -> Result<Vec<Record>> {
+        if depth > MAX_RECURSION_DEPTH {
+            return Err(anyhow!("Refusing to recurse deeper than {MAX_RECURSION_DEPTH}"));
+        }
+        let query_key = (name.clone(), record_type);
+        if self.seen.contains(&query_key) {
+            return Err(anyhow!("Broken DNS config, seen {:?} twice", query_key))
+        }
+        self.seen.push(query_key);
+
+        debug!(hostname = %name, "Resolving");
+        let mut candidates: Box<dyn TargetProvider + Send> =
+            Box::new(RootsProvider::new(&self.resolver.roots));
         loop {
-            let target = candidates
-                .next()
-                .await?
-                .ok_or_else(|| anyhow::Error::msg("no more ns's to try"))?;
-            debug!(target = format!("{}", &target), "Contacting");
-            let response = self.resolve_inner(target, name, record_type).await;
+            let target =
+                candidates.next().await?.ok_or_else(|| anyhow!("no more nameservers to try"))?;
+            let target = self.target_to_ip(target, depth).await?;
+            debug!(%target, "Contacting");
+            let response = match self.resolver.backend.query(target, name, record_type).await {
+                Err(e) => QueryResponse::Failure(e),
+                Ok(message) => {
+                    if message.response_code() == ResponseCode::NXDomain {
+                        QueryResponse::NxDomain
+                    } else if is_final(&message) {
+                        Answer(message.answers().to_vec())
+                    } else {
+                        Referral(message.name_servers().to_vec(), message.additionals().to_vec())
+                    }
+                }
+            };
             match response {
+                // todo: in case of failure we should retry with the next target
                 QueryResponse::Failure(e) => return Err(e),
                 QueryResponse::NxDomain => todo!(),
                 Referral(ns, glue) => {
                     debug!(?ns, "Received a redirect");
-                    candidates = Box::new(NsProvider::new(ns, glue, self))
+                    candidates = Box::new(NsProvider::new(ns, glue))
                 }
                 Answer(answers) => return Ok(answers),
             }
         }
     }
 
-    async fn resolve_inner(
-        &self,
-        target: IpAddr,
-        name: &Name,
-        record_type: RecordType,
-    ) -> QueryResponse {
-        match self.backend.query(target, name, record_type).await {
-            Err(e) => QueryResponse::Failure(e),
-            Ok(message) => {
-                if message.response_code() == ResponseCode::NXDomain {
-                    QueryResponse::NxDomain
-                } else if is_final(&message) {
-                    Answer(message.answers().to_vec())
-                } else {
-                    Referral(
-                        message.name_servers().to_vec(),
-                        message.additionals().to_vec(),
-                    )
-                }
-            }
+    async fn target_to_ip(&mut self, target: Target, depth: u32) -> Result<IpAddr> {
+        match target {
+            Target::Ip(ip) => Ok(ip),
+            Target::Name(name) => first_ip(&mut Box::pin(self.resolve_inner(&name, A, depth + 1)).await?),
         }
     }
 }
@@ -105,7 +122,7 @@ fn is_final(answer: &Message) -> bool {
 
 #[cfg(test)]
 mod test {
-    use std::net::{IpAddr, Ipv6Addr};
+    use std::net::{IpAddr, Ipv4Addr};
 
     use anyhow::Result;
     use hickory_proto::rr::rdata;
@@ -114,7 +131,7 @@ mod test {
     use hickory_resolver::proto::rr::Record;
     use tracing::Level;
     use tracing_subscriber::FmtSubscriber;
-    use RecordType::{A, AAAA};
+    use RecordType::A;
 
     use crate::fake_backend::FakeBackend;
     use crate::resolver::{is_final, RecursiveResolver};
@@ -151,17 +168,7 @@ mod test {
         };
     }
 
-    macro_rules! aaaa {
-        ($name:expr, $target:expr) => {
-            Record::from_rdata(
-                $name.parse()?,
-                0,
-                RData::AAAA(rdata::AAAA($target.parse()?)),
-            )
-        };
-    }
-
-    macro_rules! referral {
+    macro_rules! refer {
         ($nameservers:expr) => {{
             let mut msg = Message::new();
             msg.insert_name_servers(vec![$nameservers]);
@@ -188,49 +195,21 @@ mod test {
 
     #[tokio::test]
     async fn test_resolve() -> Result<()> {
-        let mut backend = FakeBackend::new();
-        backend.add(
-            "10.0.0.1",
-            "noa.re",
-            AAAA,
-            referral!(ns!("re", "ns.nic.fr"), a!("ns.nic.fr", "10.0.0.2")),
-        )?;
-
-        backend.add(
-            "10.0.0.2",
-            "noa.re",
-            AAAA,
-            referral!(ns!["noa.re", "ns0.resare.com"]),
-        )?;
-
-        backend.add(
-            "10.0.0.1",
-            "ns0.resare.com",
-            A,
-            referral!(
-                ns!("resare.com", "ns0.resare.com"),
-                a!("ns0.resare.com", "10.0.0.3")
-            ),
-        )?;
-
+        let mut b = FakeBackend::new();
+        b.add("10.0.0.1", "a.b", A, refer!(ns!("b", "ns.e.f"), a!("ns.e.f", "10.0.0.2")))?;
+        b.add("10.0.0.2", "a.b", A, refer!(ns!["a.b", "ns.c.d"]))?;
+        b.add("10.0.0.1", "ns.c.d", A, refer!(ns!("c.d", "ns.c.d"), a!("ns.c.d", "10.0.0.3")))?;
         // todo: once using glue records is smarter, remove this
-        backend.add(
-            "10.0.0.3",
-            "ns0.resare.com",
-            A,
-            answer!(a!("ns0.resare.com", "10.0.0.3")),
-        )?;
+        b.add("10.0.0.3", "ns.c.d", A, answer!(a!("ns.c.d", "10.0.0.3")))?;
+        b.add("10.0.0.3", "a.b", A, answer!(a!("a.b", "10.0.0.42")))?;
 
-        backend.add("10.0.0.3", "noa.re", AAAA, answer!(aaaa!("noa.re", "::42")))?;
+        let resolver = RecursiveResolver::from_backend(b, vec![IpAddr::V4("10.0.0.1".parse()?)]);
 
-        let resolver =
-            RecursiveResolver::from_backend(backend, vec![IpAddr::V4("10.0.0.1".parse()?)]);
-
-        let result = resolver.resolve(&"noa.re".parse()?, AAAA).await?;
+        let result = resolver.resolve(&"a.b".parse()?, A).await?;
         let record = result.first().expect("Could not find record in response");
-        assert_eq!(*record.name(), "noa.re".parse::<Name>()?);
-        if let Some(RData::AAAA(rdata::AAAA(addr))) = record.data() {
-            assert_eq!(*addr, "::42".parse::<Ipv6Addr>()?)
+        assert_eq!(*record.name(), "a.b".parse::<Name>()?);
+        if let Some(RData::A(rdata::A(addr))) = record.data() {
+            assert_eq!(*addr, "10.0.0.42".parse::<Ipv4Addr>()?)
         } else {
             panic!("Could not find AAAA record in result")
         }
@@ -238,12 +217,45 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn test_cross_referencing_domains() -> Result<()> {
+        let mut b = FakeBackend::new();
+        b.add("10.0.0.1", "ns.a.b", A, refer!(ns!("b", "ns.e.f"), a!("ns.e.f", "10.0.0.2")))?;
+
+        b.add("10.0.0.2", "ns.a.b", A, refer!(ns!("a.b", "ns.c.d")))?;
+
+        b.add("10.0.0.1", "ns.c.d", A, refer!(ns!("c.d", "e.f.g"), a!("e.f.g", "10.0.0.3")))?;
+
+        // NS record for ns.c.d points back to ns.a.b.
+        b.add("10.0.0.3", "ns.c.d", A, refer!(ns!("c.d", "ns.a.b")))?;
+
+        let resolver = RecursiveResolver::from_backend(b, vec![IpAddr::V4("10.0.0.1".parse()?)]);
+
+        let result = resolver.resolve(&"ns.a.b".parse()?, A).await;
+
+        if let Err(e) = result {
+            assert_eq!(format!("{e}"), "Broken DNS config, seen (Name(\"ns.a.b\"), A) twice");
+        } else {
+            panic!("This resolve() call should fail");
+        }
+
+        Ok(())
+    }
+
     #[ctor::ctor]
     fn init() {
-        let subscriber = FmtSubscriber::builder()
-            .with_max_level(Level::DEBUG)
-            .finish();
+        let subscriber = FmtSubscriber::builder().with_max_level(Level::DEBUG).finish();
         tracing::subscriber::set_global_default(subscriber)
             .expect("Could not set global default tracing subscriber");
+    }
+}
+
+fn first_ip(result: &mut Vec<Record>) -> Result<IpAddr> {
+    match result.pop() {
+        None => Err(anyhow!("unexpected empty result")),
+        Some(record) => match record.data() {
+            Some(RData::A(a)) => Ok(IpAddr::V4(a.0)),
+            _ => Err(anyhow!("no rdata, or wrong type of rdata")),
+        },
     }
 }
