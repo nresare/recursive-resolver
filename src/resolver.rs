@@ -10,7 +10,7 @@ use tracing::{debug, instrument};
 
 use crate::backend::{Backend, UdpBackend};
 use crate::resolver::QueryResponse::{Answer, Referral};
-use crate::resolver::ResolutionError::ServFail;
+use crate::resolver::ResolutionError::{NxDomain, ServFail};
 use crate::target::{NsProvider, RootsProvider, Target, TargetProvider};
 
 #[derive(Debug)]
@@ -97,10 +97,10 @@ impl<'a> ResolutionState<'a> {
             let target = self.target_to_ip(target, depth).await?;
             debug!(%target, "Contacting");
             let response = match self.resolver.backend.query(target, name, record_type).await {
-                Err(e) => QueryResponse::Failure(e),
+                Err(e) => return Err(e),
                 Ok(message) => {
                     if message.response_code() == ResponseCode::NXDomain {
-                        QueryResponse::NxDomain
+                        return Err(NxDomain);
                     } else if is_final(&message) {
                         Answer(message.answers().to_vec())
                     } else {
@@ -109,9 +109,6 @@ impl<'a> ResolutionState<'a> {
                 }
             };
             match response {
-                // todo: in case of failure we should retry with the next target
-                QueryResponse::Failure(e) => return Err(e),
-                QueryResponse::NxDomain => return Err(ResolutionError::NxDomain),
                 Referral(ns, glue) => {
                     debug!(?ns, "Received a redirect");
                     candidates = Box::new(NsProvider::new(ns, glue))
@@ -136,10 +133,6 @@ impl<'a> ResolutionState<'a> {
 }
 
 enum QueryResponse {
-    /// The Query failed
-    Failure(ResolutionError),
-    /// The domain does not exist
-    NxDomain,
     /// There was a response, but the queried server was not authoritative for the
     /// name, and returned some Authority records and potentially also Glue records
     Referral(Vec<Record>, Vec<Record>),
