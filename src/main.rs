@@ -10,7 +10,7 @@ mod backend;
 #[cfg(test)]
 mod fake_backend;
 mod resolver;
-mod selector;
+mod target;
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -35,9 +35,7 @@ async fn main() -> Result<()> {
 }
 
 fn setup_tracing() -> Result<()> {
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
-        .finish();
+    let subscriber = FmtSubscriber::builder().with_max_level(Level::DEBUG).finish();
     tracing::subscriber::set_global_default(subscriber)?;
     Ok(())
 }

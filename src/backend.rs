@@ -29,9 +29,7 @@ pub struct UdpBackend {
 
 impl UdpBackend {
     pub fn new() -> Self {
-        UdpBackend {
-            target_port: DEFAULT_TARGET_PORT,
-        }
+        UdpBackend { target_port: DEFAULT_TARGET_PORT }
     }
 }
 
@@ -98,9 +96,7 @@ mod test {
             let (read_count, peer) = server_socket.recv_from(&mut buf).await?;
             let req = Message::from_bytes(&buf[..read_count])?;
             let resp = make_response(req);
-            server_socket
-                .send_to(resp.to_vec()?.as_slice(), peer)
-                .await?;
+            server_socket.send_to(resp.to_vec()?.as_slice(), peer).await?;
             Ok(())
         });
         Ok((port, handler))
@@ -112,7 +108,7 @@ mod test {
         message.set_id(request.id());
         message.set_response_code(ResponseCode::NoError);
         message.add_answer(Record::from_rdata(
-            Name::from_str("stacey.noa.re.").unwrap(),
+            Name::from_str("stacey.a.b.").unwrap(),
             600,
             RData::A(A::new(172, 104, 148, 31)),
         ));
@@ -124,17 +120,12 @@ mod test {
         let (port, handle) = verify_request_send_response().await?;
 
         let b = UdpBackend { target_port: port };
-        let message = b
-            .query(
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                &"stacey.noa.re".parse()?,
-                RecordType::A,
-            )
-            .await?;
+        let message =
+            b.query(IpAddr::V4(Ipv4Addr::LOCALHOST), &"stacey.a.b".parse()?, RecordType::A).await?;
         assert_eq!(message.response_code(), ResponseCode::NoError);
         let answers = message.answers();
         let expected = Record::from_rdata(
-            Name::from_str("stacey.noa.re.")?,
+            Name::from_str("stacey.a.b.")?,
             600,
             RData::A("172.104.148.31".parse()?),
         );
