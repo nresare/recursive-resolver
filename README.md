@@ -8,7 +8,7 @@ the hickory-dns project.
 
 - [x] Improve the FakeBackend implementation such that a full successful lookup can be tested
 - [x] Handle cross-referencing delegations
-- [ ] Figure out how to have target server appear in traces 
+- [x] Figure out how to have target server appear in traces 
 - [ ] Implement timeouts
 - [ ] Implement caching
 - [ ] Implement running in server mode, accepting incoming requests
