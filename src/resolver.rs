@@ -44,7 +44,7 @@ impl RecursiveResolver {
 
 pub(crate) struct ResolutionState<'a> {
     resolver: &'a RecursiveResolver,
-    seen: Vec<(Name, RecordType)>
+    seen: Vec<(Name, RecordType)>,
 }
 
 const MAX_RECURSION_DEPTH: u32 = 5;
@@ -53,13 +53,18 @@ impl<'a> ResolutionState<'a> {
         ResolutionState { resolver, seen: Vec::new() }
     }
 
-    async fn resolve_inner(&mut self, name: &Name, record_type: RecordType, depth: u32) -> Result<Vec<Record>> {
+    async fn resolve_inner(
+        &mut self,
+        name: &Name,
+        record_type: RecordType,
+        depth: u32,
+    ) -> Result<Vec<Record>> {
         if depth > MAX_RECURSION_DEPTH {
             return Err(anyhow!("Refusing to recurse deeper than {MAX_RECURSION_DEPTH}"));
         }
         let query_key = (name.clone(), record_type);
         if self.seen.contains(&query_key) {
-            return Err(anyhow!("Broken DNS config, seen {:?} twice", query_key))
+            return Err(anyhow!("Broken DNS config, seen {:?} twice", query_key));
         }
         self.seen.push(query_key);
 
@@ -99,7 +104,9 @@ impl<'a> ResolutionState<'a> {
     async fn target_to_ip(&mut self, target: Target, depth: u32) -> Result<IpAddr> {
         match target {
             Target::Ip(ip) => Ok(ip),
-            Target::Name(name) => first_ip(&mut Box::pin(self.resolve_inner(&name, A, depth + 1)).await?),
+            Target::Name(name) => {
+                first_ip(&mut Box::pin(self.resolve_inner(&name, A, depth + 1)).await?)
+            }
         }
     }
 }
