@@ -11,7 +11,7 @@ use tokio::net::UdpSocket;
 
 /// Max size for the UDP receive buffer as recommended by
 /// [RFC6891](https://datatracker.ietf.org/doc/html/rfc6891#section-6.2.5).
-const MAX_RECEIVE_BUFFER_SIZE: usize = 4096;
+pub const MAX_RECEIVE_BUFFER_SIZE: usize = 4096;
 
 const DEFAULT_TARGET_PORT: u16 = 53;
 
@@ -27,6 +27,8 @@ pub trait Backend: Debug {
     ) -> Result<Message, ResolutionError>;
 }
 
+/// A Backend implementation that implements the DNS query request/response
+/// behaviour with UDP messages to a remote host.
 #[derive(Debug)]
 pub struct UdpBackend {
     target_port: u16,

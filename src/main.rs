@@ -1,23 +1,37 @@
 use crate::resolver::RecursiveResolver;
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use hickory_proto::rr::domain::Name;
 use hickory_proto::rr::RecordType;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 mod backend;
+mod daemon;
 #[cfg(test)]
 mod fake_backend;
 mod resolver;
 mod target;
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 struct Cli {
-    #[arg(required = true)]
-    name: Name,
-    #[arg(short = 't', long = "type", default_value = "A")]
-    record_type: RecordType,
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Daemon {
+        #[arg(short, long, default_value_t = 53)]
+        port: u16,
+    },
+    Lookup {
+        #[arg()]
+        name: Name,
+
+        #[arg(short = 't', long, default_value_t = RecordType::A)]
+        record_type: RecordType,
+    },
 }
 
 #[tokio::main]
@@ -27,10 +41,13 @@ async fn main() -> Result<()> {
     let args = Cli::parse();
 
     let resolver = RecursiveResolver::new();
-    let result = resolver.resolve(&args.name, args.record_type).await?;
-
-    println!("{:?}", result);
-
+    match args.command {
+        Commands::Lookup { name, record_type } => {
+            let result = resolver.resolve(&name, record_type).await?;
+            println!("{:?}", result);
+        }
+        Commands::Daemon { port } => daemon::daemon(resolver, port).await?,
+    }
     Ok(())
 }
 
