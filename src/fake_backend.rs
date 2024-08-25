@@ -14,6 +14,20 @@ pub struct FakeBackend {
     answers: HashMap<QueryKey, Message>,
 }
 
+pub struct ServFailBackend {}
+
+#[async_trait]
+impl Backend for ServFailBackend {
+    async fn query(&self, _: IpAddr, _: &Name, _: RecordType) -> Result<Message, ResolutionError> {
+        Err(ServFail("from ServFailBackend".to_string()))
+    }
+}
+impl Debug for ServFailBackend {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServFailBackend").finish()
+    }
+}
+
 impl Debug for FakeBackend {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FakeBackend").field("answer_count", &self.answers.len()).finish()
