@@ -31,7 +31,10 @@ impl RecursiveResolver {
     }
 
     #[cfg(test)]
-    fn from_backend(backend: impl Backend + Send + Sync + 'static, roots: Vec<IpAddr>) -> Self {
+    pub(crate) fn with_backend(
+        backend: impl Backend + Send + Sync + 'static,
+        roots: Vec<IpAddr>,
+    ) -> Self {
         RecursiveResolver { backend: Box::new(backend), roots }
     }
 
@@ -226,7 +229,7 @@ mod test {
         b.add("10.0.0.3", "ns.c.d", A, answer!(a!("ns.c.d", "10.0.0.3")))?;
         b.add("10.0.0.3", "a.b", A, answer!(a!("a.b", "10.0.0.42")))?;
 
-        let resolver = RecursiveResolver::from_backend(b, vec![IpAddr::V4("10.0.0.1".parse()?)]);
+        let resolver = RecursiveResolver::with_backend(b, vec![IpAddr::V4("10.0.0.1".parse()?)]);
 
         let result = resolver.resolve(&"a.b".parse()?, A).await?;
         let record = result.first().expect("Could not find record in response");
@@ -252,7 +255,7 @@ mod test {
         // NS record for ns.c.d points back to ns.a.b.
         b.add("10.0.0.3", "ns.c.d", A, refer!(ns!("c.d", "ns.a.b")))?;
 
-        let resolver = RecursiveResolver::from_backend(b, vec![IpAddr::V4("10.0.0.1".parse()?)]);
+        let resolver = RecursiveResolver::with_backend(b, vec![IpAddr::V4("10.0.0.1".parse()?)]);
 
         let result = resolver.resolve(&"ns.a.b".parse()?, A).await;
 
