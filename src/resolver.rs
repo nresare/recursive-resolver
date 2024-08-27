@@ -1,10 +1,10 @@
-use std::fmt::Debug;
-use std::net::IpAddr;
-
+use async_recursion::async_recursion;
 use hickory_proto::error::ProtoError;
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::RecordType::A;
 use hickory_proto::rr::{Name, RData, Record, RecordType};
+use std::fmt::Debug;
+use std::net::IpAddr;
 use thiserror::Error;
 use tracing::{debug, instrument};
 
@@ -71,6 +71,7 @@ impl<'a> ResolutionState<'a> {
         ResolutionState { resolver, seen: Vec::new() }
     }
 
+    #[async_recursion]
     async fn resolve_inner(
         &mut self,
         name: &Name,
