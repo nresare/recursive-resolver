@@ -8,6 +8,8 @@ use hickory_proto::rr::Name;
 use hickory_proto::rr::RecordType;
 use hickory_proto::serialize::binary::BinDecodable;
 use tokio::net::UdpSocket;
+use tracing::field::Empty;
+use tracing::instrument;
 
 /// Max size for the UDP receive buffer as recommended by
 /// [RFC6891](https://datatracker.ietf.org/doc/html/rfc6891#section-6.2.5).
@@ -22,7 +24,7 @@ pub trait Backend: Debug {
     async fn query(
         &self,
         target: IpAddr,
-        name: &Name,
+        to_resolve: &Name,
         record_type: RecordType,
     ) -> Result<Message, ResolutionError>;
 }
@@ -55,20 +57,28 @@ async fn connect(target: IpAddr, target_port: u16) -> Result<UdpSocket, Resoluti
 
 #[async_trait]
 impl Backend for UdpBackend {
+    // It looks a little weird to have status be set to error, but this is being overwritten
+    // unless the ? operator makes the execution return early
+    #[instrument(fields(otel.status_code = "Error", result = Empty, %to_resolve, %record_type, response_code = Empty))]
     async fn query(
         &self,
         target: IpAddr,
-        name: &Name,
+        to_resolve: &Name,
         record_type: RecordType,
     ) -> Result<Message, ResolutionError> {
         let socket = connect(target, self.target_port).await?;
 
-        let request = make_query(name, record_type);
+        let request = make_query(to_resolve, record_type);
         socket.send(request.to_vec()?.as_slice()).await?;
         let mut buf = vec![0u8; MAX_RECEIVE_BUFFER_SIZE];
         let read_count = socket.recv(&mut buf).await?;
 
-        Ok(Message::from_bytes(&buf[..read_count])?)
+        let message = Message::from_bytes(&buf[..read_count])?;
+        let span = tracing::Span::current();
+        span.record("otel.status_code", "Ok");
+        span.record("result", format!("{:?}", message));
+        span.record("response_code", format!("{}", message.header().response_code()));
+        Ok(message)
     }
 }
 

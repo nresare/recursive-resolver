@@ -6,7 +6,7 @@ use hickory_proto::rr::{Name, RData, Record, RecordType};
 use std::fmt::Debug;
 use std::net::IpAddr;
 use thiserror::Error;
-use tracing::{debug, instrument};
+use tracing::{debug, field::Empty, instrument};
 
 use crate::backend::{Backend, UdpBackend};
 use crate::resolver::QueryResponse::{Answer, Referral};
@@ -38,14 +38,21 @@ impl RecursiveResolver {
         RecursiveResolver { backend: Box::new(backend), roots }
     }
 
-    #[instrument]
+    #[instrument(fields(otel.kind = "server", otel.status_code = "Ok", otel.status_message = Empty, %to_resolve))]
     pub async fn resolve(
         &self,
-        name: &Name,
+        to_resolve: &Name,
         record_type: RecordType,
     ) -> Result<Vec<Record>, ResolutionError> {
         let mut state = ResolutionState::new(self);
-        state.resolve_inner(name, record_type, 1).await
+        let span = tracing::Span::current();
+        let result = state.resolve_inner(to_resolve, record_type, 1).await;
+        if let Err(e) = result {
+            span.record("otel.status_code", "Error");
+            span.record("otel.status_message", e.to_string());
+            return Err(e);
+        }
+        result
     }
 }
 #[derive(Error, Debug)]
@@ -53,7 +60,7 @@ pub enum ResolutionError {
     // RFC 1035 4.1.1 RCODE 3 "Name Error"
     #[error("No data exits for this name and record type")]
     NxDomain,
-    #[error("Server failure {0}")]
+    #[error("Server failure: {0}")]
     ServFail(String),
     #[error("Failure in underlying io")]
     IOError(#[from] std::io::Error),
@@ -71,10 +78,11 @@ impl<'a> ResolutionState<'a> {
         ResolutionState { resolver, seen: Vec::new() }
     }
 
+    #[instrument(skip(self), fields(%to_resolve))]
     #[async_recursion]
     async fn resolve_inner(
         &mut self,
-        name: &Name,
+        to_resolve: &Name,
         record_type: RecordType,
         depth: u32,
     ) -> Result<Vec<Record>, ResolutionError> {
@@ -84,13 +92,13 @@ impl<'a> ResolutionState<'a> {
                 MAX_RECURSION_DEPTH
             )));
         }
-        let query_key = (name.clone(), record_type);
+        let query_key = (to_resolve.clone(), record_type);
         if self.seen.contains(&query_key) {
             return Err(ServFail(format!("Broken DNS config, seen {:?} twice", query_key)));
         }
         self.seen.push(query_key);
 
-        debug!(hostname = %name, "Resolving");
+        debug!(hostname = %to_resolve, "Resolving");
         let mut candidates: Box<dyn TargetProvider + Send> =
             Box::new(RootsProvider::new(&self.resolver.roots));
         loop {
@@ -100,7 +108,8 @@ impl<'a> ResolutionState<'a> {
                 .ok_or_else(|| ServFail("no more nameservers to try".to_string()))?;
             let target = self.target_to_ip(target, depth).await?;
             debug!(%target, "Contacting");
-            let response = match self.resolver.backend.query(target, name, record_type).await {
+            let response = match self.resolver.backend.query(target, to_resolve, record_type).await
+            {
                 Err(e) => return Err(e),
                 Ok(message) => {
                     if message.response_code() == ResponseCode::NXDomain {
