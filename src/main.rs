@@ -3,8 +3,15 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use hickory_proto::rr::domain::Name;
 use hickory_proto::rr::RecordType;
-use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
+use opentelemetry::trace::TracerProvider;
+use opentelemetry::KeyValue;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::trace::Config;
+use opentelemetry_sdk::{runtime, Resource};
+use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{Layer, Registry};
 
 mod backend;
 mod daemon;
@@ -52,7 +59,27 @@ async fn main() -> Result<()> {
 }
 
 fn setup_tracing() -> Result<()> {
-    let subscriber = FmtSubscriber::builder().with_max_level(Level::DEBUG).finish();
+    let otlp_exporter =
+        opentelemetry_otlp::new_exporter().tonic().with_endpoint("http://localhost:4317");
+
+    let resource = Resource::new(vec![
+        KeyValue::new(SERVICE_NAME, env!("CARGO_PKG_NAME")),
+        KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+    ]);
+
+    let provider = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(otlp_exporter)
+        .with_trace_config(Config::default().with_resource(resource))
+        .install_batch(runtime::Tokio)?;
+
+    let tracer = provider.tracer("daemon");
+
+    let telemetry =
+        tracing_opentelemetry::layer().with_tracer(tracer).with_filter(LevelFilter::DEBUG);
+
+    let subscriber = Registry::default().with(telemetry);
+
     tracing::subscriber::set_global_default(subscriber)?;
     Ok(())
 }
