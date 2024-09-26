@@ -1,5 +1,5 @@
 use crate::backend::MAX_RECEIVE_BUFFER_SIZE;
-use crate::resolver::RecursiveResolver;
+use crate::resolver::{RecursiveResolver, ResolutionError};
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::serialize::binary::BinDecodable;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -47,8 +47,10 @@ async fn resolve(message: Message, resolver: &RecursiveResolver) -> Message {
                 response.add_answer(r);
             }
         }
+        Err(ResolutionError::NxDomain) => {
+            response.set_response_code(ResponseCode::NXDomain);
+        }
         Err(_) => {
-            // todo: look at special treatment for some of the failures
             response.set_response_code(ResponseCode::ServFail);
         }
     }
