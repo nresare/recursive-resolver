@@ -3,20 +3,35 @@ use hickory_proto::error::ProtoError;
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::RecordType::A;
 use hickory_proto::rr::{Name, RData, Record, RecordType};
+use lazy_static::lazy_static;
 use std::fmt::Debug;
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{debug, field::Empty, instrument};
 
 use crate::backend::{Backend, UdpBackend};
+use crate::cache::Cache;
 use crate::resolver::QueryResponse::{Answer, Referral};
 use crate::resolver::ResolutionError::{NxDomain, ServFail};
 use crate::target::{NsProvider, RootsProvider, Target, TargetProvider};
+
+// number of items in the cache
+lazy_static! {
+    static ref CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(8192).unwrap();
+}
 
 #[derive(Debug)]
 pub struct RecursiveResolver {
     backend: Box<dyn Backend + Sync + Send>,
     roots: Vec<IpAddr>,
+    cache: Cache<Query, Vec<Record>>,
+}
+#[derive(Debug, Hash, Eq, PartialEq)]
+struct Query {
+    to_resolve: Name,
+    record_type: RecordType,
 }
 
 impl RecursiveResolver {
@@ -27,6 +42,7 @@ impl RecursiveResolver {
                 IpAddr::V4("192.36.148.17".parse().unwrap()),
                 //IpAddr::V6("2001:7fe::53".parse().unwrap()),
             ],
+            cache: Cache::new(*CACHE_SIZE),
         }
     }
 
@@ -35,24 +51,35 @@ impl RecursiveResolver {
         backend: impl Backend + Send + Sync + 'static,
         roots: Vec<IpAddr>,
     ) -> Self {
-        RecursiveResolver { backend: Box::new(backend), roots }
+        RecursiveResolver { backend: Box::new(backend), roots, cache: Cache::new(*CACHE_SIZE) }
     }
 
-    #[instrument(fields(otel.kind = "server", otel.status_code = "Ok", otel.status_message = Empty, %to_resolve))]
+    #[instrument(fields(otel.kind = "server", otel.status_code = Empty, otel.status_message = Empty, %to_resolve))]
     pub async fn resolve(
         &self,
         to_resolve: &Name,
         record_type: RecordType,
     ) -> Result<Vec<Record>, ResolutionError> {
+        let query = Query { to_resolve: to_resolve.clone(), record_type };
+        if let Some(from_cache) = self.cache.get(&query, Instant::now()) {
+            return Ok(from_cache);
+        }
+
         let mut state = ResolutionState::new(self);
         let span = tracing::Span::current();
         let result = state.resolve_inner(to_resolve, record_type, 1).await;
-        if let Err(e) = result {
-            span.record("otel.status_code", "Error");
-            span.record("otel.status_message", e.to_string());
-            return Err(e);
+        match result {
+            Err(e) => {
+                span.record("otel.status_code", "Error");
+                span.record("otel.status_message", e.to_string());
+                Err(e)
+            }
+            Ok(records) => {
+                let ttl = records[0].ttl() as u64;
+                self.cache.store(query, records.clone(), Instant::now() + Duration::from_secs(ttl));
+                Ok(records)
+            }
         }
-        result
     }
 }
 #[derive(Error, Debug)]
