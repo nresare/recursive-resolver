@@ -14,6 +14,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{Layer, Registry};
 
 mod backend;
+mod cache;
 mod daemon;
 #[cfg(test)]
 mod fake_backend;
