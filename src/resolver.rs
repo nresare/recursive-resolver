@@ -34,8 +34,10 @@ struct Query {
     record_type: RecordType,
 }
 
+type DnsCache = Cache<Query, Vec<Record>>;
+
 /// Some convenient methods for Caches that holds DNS data
-impl Cache<Query, Vec<Record>> {
+impl DnsCache {
     /// extracts the ttl from the Record to be stored, to make it a bit more ergonomic to use
     fn store(&self, query: Query, value: Vec<Record>, now: Instant) {
         let min_ttl = value.iter().map(Record::ttl).min().unwrap_or(0);
@@ -87,11 +89,6 @@ impl RecursiveResolver {
         to_resolve: &Name,
         record_type: RecordType,
     ) -> Result<Vec<Record>, ResolutionError> {
-        let query = Query { to_resolve: to_resolve.clone(), record_type };
-        if let Some(from_cache) = self.cache.get_and_update_ttl(&query, Instant::now()) {
-            return Ok(from_cache);
-        }
-
         let mut state = ResolutionState::new(self);
         let span = tracing::Span::current();
         let result = state.resolve_inner(to_resolve, record_type, 1).await;
@@ -101,10 +98,7 @@ impl RecursiveResolver {
                 span.record("otel.status_message", e.to_string());
                 Err(e)
             }
-            Ok(records) => {
-                self.cache.store(query, records.clone(), Instant::now());
-                Ok(records)
-            }
+            Ok(answer) => Ok(answer),
         }
     }
 }
@@ -123,12 +117,13 @@ pub enum ResolutionError {
 pub(crate) struct ResolutionState<'a> {
     resolver: &'a RecursiveResolver,
     seen: Vec<(Name, RecordType)>,
+    cache: &'a DnsCache,
 }
 
 const MAX_RECURSION_DEPTH: u32 = 5;
 impl<'a> ResolutionState<'a> {
     pub(crate) fn new(resolver: &'a RecursiveResolver) -> Self {
-        ResolutionState { resolver, seen: Vec::new() }
+        ResolutionState { resolver, seen: Vec::new(), cache: &resolver.cache }
     }
 
     #[instrument(skip(self), fields(%to_resolve))]
@@ -139,6 +134,11 @@ impl<'a> ResolutionState<'a> {
         record_type: RecordType,
         depth: u32,
     ) -> Result<Vec<Record>, ResolutionError> {
+        let query = Query { to_resolve: to_resolve.clone(), record_type };
+        if let Some(from_cache) = self.cache.get_and_update_ttl(&query, Instant::now()) {
+            return Ok(from_cache);
+        }
+
         if depth > MAX_RECURSION_DEPTH {
             return Err(ServFail(format!(
                 "Refusing to recurse deeper than {}",
@@ -179,7 +179,14 @@ impl<'a> ResolutionState<'a> {
                     debug!(?ns, "Received a redirect");
                     candidates = Box::new(NsProvider::new(ns, glue))
                 }
-                Answer(answers) => return Ok(answers),
+                Answer(answers) => {
+                    self.cache.store(
+                        Query { to_resolve: to_resolve.clone(), record_type },
+                        answers.clone(),
+                        Instant::now(),
+                    );
+                    return Ok(answers);
+                }
             }
         }
     }
