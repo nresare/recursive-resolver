@@ -34,6 +34,33 @@ struct Query {
     record_type: RecordType,
 }
 
+/// Some convenient methods for Caches that holds DNS data
+impl Cache<Query, Vec<Record>> {
+    /// extracts the ttl from the Record to be stored, to make it a bit more ergonomic to use
+    fn store(&self, query: Query, value: Vec<Record>, now: Instant) {
+        let min_ttl = value.iter().map(Record::ttl).min().unwrap_or(0);
+        let min_ttl = Duration::from_secs(min_ttl as u64);
+        self.store_with_ttl(query, value, now + min_ttl);
+    }
+
+    fn get_and_update_ttl(&self, query: &Query, now: Instant) -> Option<Vec<Record>> {
+        self.get_with_remaining_ttl(query, now).map(update_ttl)
+    }
+}
+
+/// Creates and returns a copy of Vec<Record> replacing the ttl value in each of the records with
+/// the passed duration.
+fn update_ttl(item: (Vec<Record>, Duration)) -> Vec<Record> {
+    item.0
+        .iter()
+        .map(|r| {
+            let mut r = r.clone();
+            r.set_ttl(item.1.as_secs() as u32);
+            r
+        })
+        .collect()
+}
+
 impl RecursiveResolver {
     pub fn new() -> Self {
         RecursiveResolver {
@@ -61,7 +88,7 @@ impl RecursiveResolver {
         record_type: RecordType,
     ) -> Result<Vec<Record>, ResolutionError> {
         let query = Query { to_resolve: to_resolve.clone(), record_type };
-        if let Some(from_cache) = self.cache.get(&query, Instant::now()) {
+        if let Some(from_cache) = self.cache.get_and_update_ttl(&query, Instant::now()) {
             return Ok(from_cache);
         }
 
@@ -75,8 +102,7 @@ impl RecursiveResolver {
                 Err(e)
             }
             Ok(records) => {
-                let ttl = records[0].ttl() as u64;
-                self.cache.store(query, records.clone(), Instant::now() + Duration::from_secs(ttl));
+                self.cache.store(query, records.clone(), Instant::now());
                 Ok(records)
             }
         }
@@ -186,18 +212,30 @@ fn is_final(answer: &Message) -> bool {
 
 #[cfg(test)]
 mod test {
-    use std::net::{IpAddr, Ipv4Addr};
-
     use anyhow::Result;
     use hickory_proto::op::{Header, Message};
     use hickory_proto::rr::{rdata, Record};
     use hickory_proto::rr::{Name, RData, RecordType};
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::Duration;
     use tracing::Level;
     use tracing_subscriber::FmtSubscriber;
     use RecordType::A;
 
     use crate::fake_backend::FakeBackend;
-    use crate::resolver::{is_final, RecursiveResolver, ResolutionError};
+    use crate::resolver::{is_final, update_ttl, RecursiveResolver, ResolutionError};
+
+    #[test]
+    fn test_update_ttl() -> Result<()> {
+        let record = Record::from_rdata(
+            "example.com.".parse()?,
+            47,
+            RData::A(rdata::A("127.0.0.1".parse()?)),
+        );
+        let result = update_ttl((vec![record], Duration::from_secs(42)));
+        assert_eq!(result.get(0).unwrap().ttl(), 42);
+        Ok(())
+    }
 
     #[test]
     fn test_is_final() {

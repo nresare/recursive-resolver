@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::instrument;
 
 #[derive(Debug)]
@@ -16,16 +16,19 @@ struct ValueWithTTL<V> {
     valid_before: Instant,
 }
 
-impl<K: Hash + Eq + Debug, V: Clone> Cache<K, V> {
+/// This is an LRU cache with TTL support with locking to enable multiple threads getting and
+/// storing values.
+impl<K: Hash + Eq + Debug, V: Clone + Debug> Cache<K, V> {
     pub(crate) fn new(capacity: NonZeroUsize) -> Cache<K, V> {
         Cache { lru: Mutex::new(LruCache::new(capacity)) }
     }
-    pub(crate) fn store(&self, question: K, value: V, valid_before: Instant) {
+    #[instrument(name = "cache-store", skip(self))]
+    pub(crate) fn store_with_ttl(&self, question: K, value: V, valid_before: Instant) {
         self.lru.lock().unwrap().put(question, ValueWithTTL { value, valid_before });
     }
 
     #[instrument(name = "cache-get", skip(self), fields(hit = false, expired = false))]
-    pub(crate) fn get(&self, key: &K, now: Instant) -> Option<V> {
+    pub(crate) fn get_with_remaining_ttl(&self, key: &K, now: Instant) -> Option<(V, Duration)> {
         let mut guard = self.lru.lock().unwrap();
         let span = tracing::Span::current();
         let with_ttl = guard.get(key)?;
@@ -36,7 +39,7 @@ impl<K: Hash + Eq + Debug, V: Clone> Cache<K, V> {
             None
         } else {
             span.record("hit", true);
-            Some(with_ttl.value.clone())
+            Some((with_ttl.value.clone(), with_ttl.valid_before - now))
         }
     }
 }
@@ -54,18 +57,22 @@ mod tests {
         let now = Instant::now();
         for i in 0..5 {
             let ttl = now + Duration::from_secs(10);
-            cache.store(format!("key{i}"), "value0", ttl);
+            cache.store_with_ttl(format!("key{i}"), "value0", ttl);
         }
 
-        let result = cache.get(&"key0".to_owned(), Instant::now());
+        let result = cache.get_with_remaining_ttl(&"key0".to_owned(), Instant::now());
         assert!(result.is_some());
-        assert_eq!(result.unwrap(), "value0");
+        assert_eq!(result.unwrap().0, "value0");
+        // verify that the time remaining is close to 10 seconds
+        let remaining = result.unwrap().1;
+        assert!(Duration::from_secs(10) - remaining < Duration::from_secs(1));
 
         assert_eq!(cache.lru.lock().unwrap().len(), 5);
-        let result = cache.get(&"key1".to_owned(), now + Duration::from_secs(20));
+        let result =
+            cache.get_with_remaining_ttl(&"key1".to_owned(), now + Duration::from_secs(20));
         assert!(result.is_none());
         assert_eq!(cache.lru.lock().unwrap().len(), 4);
 
-        assert!(cache.get(&"key42".to_owned(), now).is_none());
+        assert!(cache.get_with_remaining_ttl(&"key42".to_owned(), now).is_none());
     }
 }
