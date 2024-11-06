@@ -1,14 +1,14 @@
 #[macro_export]
 macro_rules! ns {
     ($name:expr, $target:expr) => {
-        Record::from_rdata($name.parse()?, 0, RData::NS(rdata::NS($target.parse()?)))
+        Record::from_rdata($name.parse()?, 60, RData::NS(rdata::NS($target.parse()?)))
     };
 }
 
 #[macro_export]
 macro_rules! a {
     ($name:expr, $target:expr) => {
-        Record::from_rdata($name.parse()?, 0, RData::A(rdata::A(($target.parse()?))))
+        Record::from_rdata($name.parse()?, 60, RData::A(rdata::A(($target.parse()?))))
     };
 }
 
