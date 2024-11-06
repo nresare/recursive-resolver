@@ -18,6 +18,8 @@ mod cache;
 mod daemon;
 #[cfg(test)]
 mod fake_backend;
+#[cfg(test)]
+mod macros;
 mod resolver;
 mod target;
 

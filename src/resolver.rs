@@ -7,12 +7,12 @@ use lazy_static::lazy_static;
 use std::fmt::Debug;
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use thiserror::Error;
 use tracing::{debug, field::Empty, instrument};
 
 use crate::backend::{Backend, UdpBackend};
-use crate::cache::Cache;
+use crate::cache::{Cache, DnsCache, Query};
 use crate::resolver::QueryResponse::{Answer, Referral};
 use crate::resolver::ResolutionError::{NxDomain, ServFail};
 use crate::target::{NsProvider, RootsProvider, Target, TargetProvider};
@@ -27,40 +27,6 @@ pub struct RecursiveResolver {
     backend: Box<dyn Backend + Sync + Send>,
     roots: Vec<IpAddr>,
     cache: Cache<Query, Vec<Record>>,
-}
-#[derive(Debug, Hash, Eq, PartialEq)]
-struct Query {
-    to_resolve: Name,
-    record_type: RecordType,
-}
-
-type DnsCache = Cache<Query, Vec<Record>>;
-
-/// Some convenient methods for Caches that holds DNS data
-impl DnsCache {
-    /// extracts the ttl from the Record to be stored, to make it a bit more ergonomic to use
-    fn store(&self, query: Query, value: Vec<Record>, now: Instant) {
-        let min_ttl = value.iter().map(Record::ttl).min().unwrap_or(0);
-        let min_ttl = Duration::from_secs(min_ttl as u64);
-        self.store_with_ttl(query, value, now + min_ttl);
-    }
-
-    fn get_and_update_ttl(&self, query: &Query, now: Instant) -> Option<Vec<Record>> {
-        self.get_with_remaining_ttl(query, now).map(update_ttl)
-    }
-}
-
-/// Creates and returns a copy of Vec<Record> replacing the ttl value in each of the records with
-/// the passed duration.
-fn update_ttl(item: (Vec<Record>, Duration)) -> Vec<Record> {
-    item.0
-        .iter()
-        .map(|r| {
-            let mut r = r.clone();
-            r.set_ttl(item.1.as_secs() as u32);
-            r
-        })
-        .collect()
 }
 
 impl RecursiveResolver {
@@ -224,25 +190,13 @@ mod test {
     use hickory_proto::rr::{rdata, Record};
     use hickory_proto::rr::{Name, RData, RecordType};
     use std::net::{IpAddr, Ipv4Addr};
-    use std::time::Duration;
     use tracing::Level;
     use tracing_subscriber::FmtSubscriber;
     use RecordType::A;
 
     use crate::fake_backend::FakeBackend;
-    use crate::resolver::{is_final, update_ttl, RecursiveResolver, ResolutionError};
-
-    #[test]
-    fn test_update_ttl() -> Result<()> {
-        let record = Record::from_rdata(
-            "example.com.".parse()?,
-            47,
-            RData::A(rdata::A("127.0.0.1".parse()?)),
-        );
-        let result = update_ttl((vec![record], Duration::from_secs(42)));
-        assert_eq!(result.get(0).unwrap().ttl(), 42);
-        Ok(())
-    }
+    use crate::resolver::{is_final, RecursiveResolver, ResolutionError};
+    use crate::{a, answer, ns, refer};
 
     #[test]
     fn test_is_final() {
@@ -262,43 +216,6 @@ mod test {
 
         m.set_header(*Header::new().set_authoritative(true));
         assert!(is_final(&m));
-    }
-
-    macro_rules! ns {
-        ($name:expr, $target:expr) => {
-            Record::from_rdata($name.parse()?, 0, RData::NS(rdata::NS($target.parse()?)))
-        };
-    }
-
-    macro_rules! a {
-        ($name:expr, $target:expr) => {
-            Record::from_rdata($name.parse()?, 0, RData::A(rdata::A(($target.parse()?))))
-        };
-    }
-
-    macro_rules! refer {
-        ($nameservers:expr) => {{
-            let mut msg = Message::new();
-            msg.insert_name_servers(vec![$nameservers]);
-            msg
-        }};
-        ($nameservers:expr, $glue:expr) => {{
-            let mut msg = Message::new();
-            msg.insert_name_servers(vec![$nameservers]);
-            msg.insert_additionals(vec![$glue]);
-            msg
-        }};
-    }
-
-    macro_rules! answer {
-        ($record:expr) => {{
-            let mut msg = Message::new();
-            let mut header = Header::default();
-            header.set_authoritative(true);
-            msg.set_header(header);
-            msg.insert_answers(vec![$record]);
-            msg
-        }};
     }
 
     #[tokio::test]

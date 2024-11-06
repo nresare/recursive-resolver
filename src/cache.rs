@@ -1,3 +1,4 @@
+use hickory_proto::rr::{Name, Record, RecordType};
 use lru::LruCache;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -44,9 +45,46 @@ impl<K: Hash + Eq + Debug, V: Clone + Debug> Cache<K, V> {
     }
 }
 
+pub(crate) type DnsCache = Cache<Query, Vec<Record>>;
+
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+pub(crate) struct Query {
+    pub to_resolve: Name,
+    pub record_type: RecordType,
+}
+
+/// Some convenient methods for Caches that holds DNS data
+impl DnsCache {
+    /// extracts the ttl from the Record to be stored, to make it a bit more ergonomic to use
+    pub(crate) fn store(&self, query: Query, value: Vec<Record>, now: Instant) {
+        let min_ttl = value.iter().map(Record::ttl).min().unwrap_or(0);
+        let min_ttl = Duration::from_secs(min_ttl as u64);
+        self.store_with_ttl(query, value, now + min_ttl);
+    }
+
+    pub(crate) fn get_and_update_ttl(&self, query: &Query, now: Instant) -> Option<Vec<Record>> {
+        self.get_with_remaining_ttl(query, now).map(update_ttl)
+    }
+}
+
+/// Creates and returns a copy of Vec<Record> replacing the ttl value in each of the records with
+/// the passed duration.
+fn update_ttl(item: (Vec<Record>, Duration)) -> Vec<Record> {
+    item.0
+        .iter()
+        .map(|r| {
+            let mut r = r.clone();
+            r.set_ttl(item.1.as_secs() as u32);
+            r
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::cache::Cache;
+    use crate::a;
+    use crate::cache::{update_ttl, Cache, DnsCache, Query};
+    use hickory_proto::rr::{rdata, RData, Record, RecordType};
     use std::num::NonZeroUsize;
     use std::time::{Duration, Instant};
 
@@ -74,5 +112,32 @@ mod tests {
         assert_eq!(cache.lru.lock().unwrap().len(), 4);
 
         assert!(cache.get_with_remaining_ttl(&"key42".to_owned(), now).is_none());
+    }
+
+    #[test]
+    fn test_update_ttl() -> anyhow::Result<()> {
+        let mut record = a!("example.com", "127.0.0.1");
+        record.set_ttl(47);
+        let mut another = a!("another.com", "127.0.0.1");
+        another.set_ttl(48);
+
+        let result = update_ttl((vec![record, another], Duration::from_secs(42)));
+        assert!(result.into_iter().map(|r| r.ttl()).all(|ttl| ttl == 42));
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_and_update_ttl() -> anyhow::Result<()> {
+        let mut record = a!("example.com", "127.0.0.1");
+        record.set_ttl(47);
+        let cache = DnsCache::new(NonZeroUsize::new(1).unwrap());
+        let query = Query { to_resolve: "example.com.".parse()?, record_type: RecordType::A };
+        let when = Instant::now();
+        cache.store(query.clone(), vec![record], when);
+
+        let result = cache.get_and_update_ttl(&query, when + Duration::from_secs(10));
+        assert!(result.is_some());
+        assert!(result.unwrap().iter().all(|r| r.ttl() == 37));
+        Ok(())
     }
 }
