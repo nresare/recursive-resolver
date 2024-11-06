@@ -1,11 +1,12 @@
-use hickory_proto::rr::{Name, Record, RecordType};
+use hickory_proto::rr::{Name, RData, Record, RecordType};
 use lru::LruCache;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 #[derive(Debug)]
 pub(crate) struct Cache<K: Hash + Eq, V> {
@@ -58,13 +59,70 @@ impl DnsCache {
     /// extracts the ttl from the Record to be stored, to make it a bit more ergonomic to use
     pub(crate) fn store(&self, query: Query, value: Vec<Record>, now: Instant) {
         let min_ttl = value.iter().map(Record::ttl).min().unwrap_or(0);
+        if min_ttl == 0 {
+            return;
+        }
         let min_ttl = Duration::from_secs(min_ttl as u64);
         self.store_with_ttl(query, value, now + min_ttl);
+    }
+
+    pub(crate) fn store_referral(
+        &self,
+        name_servers: Vec<Record>,
+        glue: Vec<Record>,
+        to_resolve: &Name,
+        now: Instant,
+    ) {
+        if !eligible(&name_servers, &glue, to_resolve) {
+            return;
+        }
+        for (query, records) in make_referral_query(&name_servers) {
+            self.store(query, records, now)
+        }
+        for (query, records) in make_referral_query(&glue) {
+            self.store(query, records, now)
+        }
     }
 
     pub(crate) fn get_and_update_ttl(&self, query: &Query, now: Instant) -> Option<Vec<Record>> {
         self.get_with_remaining_ttl(query, now).map(update_ttl)
     }
+}
+
+fn make_referral_query(records: &Vec<Record>) -> HashMap<Query, Vec<Record>> {
+    let mut result = HashMap::new();
+    if records.is_empty() {
+        return result;
+    }
+    for record in records {
+        let query = Query { to_resolve: record.name().clone(), record_type: record.record_type() };
+        result.entry(query).or_insert_with(Vec::new).push(record.clone());
+    }
+    result
+}
+
+/// We can only cache records that are relevant to to_resolve, the name we were querying for.
+/// This prevents caching of unrelated records that a malicious or misconfigured name server
+/// might be providing in responses. We skip all caching if any of the records are wrong.
+fn eligible(name_servers: &Vec<Record>, glue: &Vec<Record>, to_resolve: &Name) -> bool {
+    let mut names = HashSet::new();
+    for name_server in name_servers {
+        if let Some(RData::NS(ns)) = name_server.data() {
+            names.insert(ns.0.to_string());
+        }
+
+        if !name_server.name().zone_of(to_resolve) {
+            debug!(%to_resolve, %name_server, "Received out of zone ns record");
+            return false;
+        }
+    }
+    for glue in glue {
+        if !names.contains(&glue.name().to_string()) {
+            debug!(%glue, "Glue record without matching NS");
+            return false;
+        }
+    }
+    true
 }
 
 /// Creates and returns a copy of Vec<Record> replacing the ttl value in each of the records with
@@ -82,9 +140,11 @@ fn update_ttl(item: (Vec<Record>, Duration)) -> Vec<Record> {
 
 #[cfg(test)]
 mod tests {
-    use crate::a;
-    use crate::cache::{update_ttl, Cache, DnsCache, Query};
-    use hickory_proto::rr::{rdata, RData, Record, RecordType};
+    use crate::cache::{eligible, make_referral_query, update_ttl, Cache, DnsCache, Query};
+    use crate::{a, ns};
+    use anyhow::Result;
+    use hickory_proto::rr::{rdata, Name, RData, Record, RecordType};
+    use std::collections::HashMap;
     use std::num::NonZeroUsize;
     use std::time::{Duration, Instant};
 
@@ -115,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_ttl() -> anyhow::Result<()> {
+    fn test_update_ttl() -> Result<()> {
         let mut record = a!("example.com", "127.0.0.1");
         record.set_ttl(47);
         let mut another = a!("another.com", "127.0.0.1");
@@ -125,19 +185,110 @@ mod tests {
         assert!(result.into_iter().map(|r| r.ttl()).all(|ttl| ttl == 42));
         Ok(())
     }
+    macro_rules! query {
+        ($name:expr, $record_type:expr) => {
+            Query { to_resolve: $name.parse()?, record_type: $record_type }
+        };
+    }
 
     #[test]
-    fn test_get_and_update_ttl() -> anyhow::Result<()> {
+    fn test_zero_ttl() -> Result<()> {
+        let mut record = a!("example.com", "127.0.0.1");
+        record.set_ttl(0);
+        let cache = DnsCache::new(NonZeroUsize::new(1).unwrap());
+        let query = query!("example.com", RecordType::A);
+
+        let when = Instant::now();
+        cache.store(query.clone(), vec![record], when);
+
+        assert!(cache.get_and_update_ttl(&query, when).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_and_update_ttl() -> Result<()> {
         let mut record = a!("example.com", "127.0.0.1");
         record.set_ttl(47);
         let cache = DnsCache::new(NonZeroUsize::new(1).unwrap());
-        let query = Query { to_resolve: "example.com.".parse()?, record_type: RecordType::A };
+        let query = query!("example.com", RecordType::A);
         let when = Instant::now();
         cache.store(query.clone(), vec![record], when);
 
         let result = cache.get_and_update_ttl(&query, when + Duration::from_secs(10));
         assert!(result.is_some());
         assert!(result.unwrap().iter().all(|r| r.ttl() == 37));
+        Ok(())
+    }
+
+    #[test]
+    fn test_eligible() -> Result<()> {
+        let to_resolve: Name = "example.com.".parse()?;
+        assert!(eligible(&vec![ns!("example.com.", "dns.foo.bar")], &vec![], &to_resolve));
+        assert!(eligible(&vec![ns!("com", "dns.foo.bar")], &vec![], &to_resolve));
+        assert!(!eligible(&vec![ns!("net", "dns.foo.bar")], &vec![], &to_resolve));
+
+        assert!(eligible(
+            &vec![ns!("com", "dns.foo.com")],
+            &vec![a!("dns.foo.com", "127.0.0.1")],
+            &to_resolve
+        ));
+        assert!(!eligible(
+            &vec![ns!("com", "dns.foo.com")],
+            &vec![a!("dns.victim.org", "127.0.0.1")],
+            &to_resolve
+        ));
+        // verify that this is case-insensitive
+        assert!(eligible(
+            &vec![ns!("com", "dns.FOO.com")],
+            &vec![a!("dns.foo.com", "127.0.0.1")],
+            &to_resolve
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_make_referral_query() -> Result<()> {
+        let result = make_referral_query(&vec![ns!("com", "a.com"), ns!("com", "b.com")]);
+        assert_eq!(
+            HashMap::from([(
+                query!("com", RecordType::NS),
+                vec![ns!("com", "a.com"), ns!("com", "b.com")]
+            )]),
+            result
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_store_referral() -> Result<()> {
+        let cache = DnsCache::new(NonZeroUsize::new(3).unwrap());
+        cache.store_referral(
+            vec![ns!("com", "a.com"), ns!("com", "b.com")],
+            vec![a!("a.com", "127.0.0.1"), a!("b.com", "127.0.0.3")],
+            &"example.com".parse()?,
+            Instant::now(),
+        );
+
+        let result = cache.get_and_update_ttl(&query!("com", RecordType::NS), Instant::now());
+        assert_eq!(Some(vec![ns!("com", "a.com"), ns!("com", "b.com")]), result);
+
+        let result = cache.get_and_update_ttl(&query!("a.com", RecordType::A), Instant::now());
+        assert_eq!(Some(vec![a!("a.com", "127.0.0.1")]), result);
+        Ok(())
+    }
+
+    #[test]
+    fn test_store_referral_empty_glue() -> Result<()> {
+        let cache = DnsCache::new(NonZeroUsize::new(3).unwrap());
+        cache.store_referral(
+            vec![ns!("com", "a.com"), ns!("com", "b.com")],
+            vec![],
+            &"example.com".parse()?,
+            Instant::now(),
+        );
+        let result = cache.get_and_update_ttl(&query!("com", RecordType::NS), Instant::now());
+        assert_eq!(Some(vec![ns!("com", "a.com"), ns!("com", "b.com")]), result);
+
         Ok(())
     }
 }

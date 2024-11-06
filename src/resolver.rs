@@ -56,16 +56,13 @@ impl RecursiveResolver {
         record_type: RecordType,
     ) -> Result<Vec<Record>, ResolutionError> {
         let mut state = ResolutionState::new(self);
-        let span = tracing::Span::current();
         let result = state.resolve_inner(to_resolve, record_type, 1).await;
-        match result {
-            Err(e) => {
-                span.record("otel.status_code", "Error");
-                span.record("otel.status_message", e.to_string());
-                Err(e)
-            }
-            Ok(answer) => Ok(answer),
+        if let Err(e) = &result {
+            let span = tracing::Span::current();
+            span.record("otel.status_code", "Error");
+            span.record("otel.status_message", e.to_string());
         }
+        result
     }
 }
 #[derive(Error, Debug)]
@@ -143,8 +140,11 @@ impl<'a> ResolutionState<'a> {
             match response {
                 Referral(ns, glue) => {
                     debug!(?ns, "Received a redirect");
+                    self.cache.store_referral(ns.clone(), glue.clone(), to_resolve, Instant::now());
+
                     candidates = Box::new(NsProvider::new(ns, glue))
                 }
+
                 Answer(answers) => {
                     self.cache.store(
                         Query { to_resolve: to_resolve.clone(), record_type },
