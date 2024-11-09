@@ -118,16 +118,15 @@ impl DnsCache {
         CacheResponse::None
     }
 
-    fn fetch_glue(&self, name_servers: &Vec<Record>, now: Instant) -> Vec<Record> {
+    fn fetch_glue(&self, name_servers: &[Record], now: Instant) -> Vec<Record> {
         let mut result = Vec::with_capacity(name_servers.len());
-        for ns in name_servers {
+        // The Authority section of a Message can contain non NS records, see #23
+        for ns in name_servers.iter().filter(|r| r.record_type() == RecordType::NS) {
             if let Ok(name) = get_ns_name(ns) {
                 let query = Query { to_resolve: name.clone(), record_type: RecordType::A };
                 if let Some(records) = self.get_and_update_ttl(&query, now) {
                     result.extend(records);
                 }
-            } else {
-                warn!(%ns, "Invalid NS record retrieved from cache")
             }
         }
         result
