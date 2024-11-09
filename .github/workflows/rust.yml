@@ -28,9 +28,9 @@ jobs:
       with:
         persist-credentials: false
     - name: Install cargo-llvm-cov
-      run: cargo install cargo-llvm-cov
-    - name: Run tests
-      run: cargo llvm-cov --codecov --output-path=coverage.json
+      uses: taiki-e/install-action@cargo-llvm-cov
+    - name: Run tests (with coverage)
+      run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov.json
     - name: Format check
       run: cargo fmt --check
     - name: Clippy check
