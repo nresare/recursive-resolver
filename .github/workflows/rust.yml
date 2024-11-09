@@ -34,7 +34,7 @@ jobs:
     - name: Format check
       run: cargo fmt --check
     - name: Clippy check
-      run: cargo clippy --no-deps
+      run: cargo clippy --no-deps -- -Dwarnings
     - name: Codecov upload
       uses: codecov/codecov-action@v4
       env:
