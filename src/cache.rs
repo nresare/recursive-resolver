@@ -26,13 +26,12 @@ impl<K: Hash + Eq + Debug, V: Clone + Debug> Cache<K, V> {
     pub(crate) fn new(capacity: NonZeroUsize) -> Cache<K, V> {
         Cache { lru: Mutex::new(LruCache::new(capacity)) }
     }
-    #[instrument(name = "cache-store", skip(self))]
-    pub(crate) fn store_with_ttl(&self, key: K, value: V, valid_before: Instant) {
+    fn store_with_ttl(&self, key: K, value: V, valid_before: Instant) {
         self.lru.lock().unwrap().put(key, ValueWithTTL { value, valid_before });
     }
 
     #[instrument(name = "cache-get", skip(self), fields(hit = false, expired = false))]
-    pub(crate) fn get_with_remaining_ttl(&self, key: &K, now: Instant) -> Option<(V, Duration)> {
+    fn get_with_remaining_ttl(&self, key: &K, now: Instant) -> Option<(V, Duration)> {
         let mut guard = self.lru.lock().unwrap();
         let span = tracing::Span::current();
         let with_ttl = guard.get(key)?;
@@ -72,7 +71,14 @@ pub(crate) enum CacheResponse {
 /// Some convenient methods for Caches that holds DNS data
 impl DnsCache {
     /// extracts the ttl from the Record to be stored, to make it a bit more ergonomic to use
+    #[instrument(name = "cache-store", skip(self), fields(count = value.len()))]
     pub(crate) fn store(&self, query: Query, value: Vec<Record>, now: Instant) {
+        self.inner_store(query, value, now)
+    }
+
+    // This lives in a private method to avoid generating tracing spans for all the stores
+    // that gets spawned by store_referral when the top level span is enough
+    fn inner_store(&self, query: Query, value: Vec<Record>, now: Instant) {
         let min_ttl = value.iter().map(Record::ttl).min().unwrap_or(0);
         if min_ttl == 0 {
             return;
@@ -83,6 +89,7 @@ impl DnsCache {
 
     /// a version of store that will validate referral style responses and
     /// create keys from name_server and glue records
+    #[instrument(name = "cache-store-referral", skip(self), fields(to_resolve = to_resolve.to_string()))]
     pub(crate) fn store_referral(
         &self,
         name_servers: Vec<Record>,
@@ -94,10 +101,10 @@ impl DnsCache {
             return;
         }
         for (query, records) in make_referral_query(&name_servers) {
-            self.store(query, records, now)
+            self.inner_store(query, records, now)
         }
         for (query, records) in make_referral_query(&glue) {
-            self.store(query, records, now)
+            self.inner_store(query, records, now)
         }
     }
 
@@ -198,7 +205,7 @@ fn update_ttl(item: (Vec<Record>, Duration)) -> Vec<Record> {
 mod tests {
     use crate::cache::CacheResponse::{Authoritative, Referral};
     use crate::cache::{
-        eligible, make_referral_query, parents, update_ttl, Cache, DnsCache, Query,
+        eligible, make_referral_query, parents, update_ttl, Cache, CacheResponse, DnsCache, Query,
     };
     use crate::{a, ns};
     use anyhow::Result;
@@ -331,7 +338,7 @@ mod tests {
         cache.store_referral(
             vec![ns!("com", "a.com"), ns!("com", "b.com")],
             vec![a!("a.com", "127.0.0.1"), a!("b.com", "127.0.0.3")],
-            &"example.com".parse()?,
+            &name!("example.com"),
             Instant::now(),
         );
 
@@ -344,12 +351,27 @@ mod tests {
     }
 
     #[test]
+    fn test_store_invalid_referral() -> Result<()> {
+        let cache = DnsCache::new(NonZeroUsize::new(10).unwrap());
+        cache.store_referral(
+            vec![ns!("com.", "a.com."), ns!("net.", "a.net.")],
+            vec![],
+            &name!("example.com"),
+            Instant::now(),
+        );
+
+        assert_eq!(None, cache.get_and_update_ttl(&query!("net.", RecordType::NS), Instant::now()));
+
+        Ok(())
+    }
+
+    #[test]
     fn test_store_referral_empty_glue() -> Result<()> {
         let cache = DnsCache::new(NonZeroUsize::new(3).unwrap());
         cache.store_referral(
             vec![ns!("com", "a.com"), ns!("com", "b.com")],
             vec![],
-            &"example.com".parse()?,
+            &name!("example.com"),
             Instant::now(),
         );
         let result = cache.get_and_update_ttl(&query!("com", RecordType::NS), Instant::now());
@@ -376,7 +398,7 @@ mod tests {
         cache.store_referral(
             vec![ns!("com.", "a.com."), ns!("com.", "b.com.")],
             vec![a!("a.com.", "127.0.0.1"), a!("b.com.", "127.0.0.3")],
-            &"example.com.".parse()?,
+            &name!("example.com."),
             Instant::now(),
         );
 
@@ -398,6 +420,16 @@ mod tests {
                 vec![a!["ns0.com", "127.0.0.1"], a!("ns1.com", "127.0.0.2")]
             ),
             result
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tes_get_best_record_none() -> Result<()> {
+        let cache = DnsCache::new(NonZeroUsize::new(1).unwrap());
+        assert_eq!(
+            CacheResponse::None,
+            cache.get_best_record(&query!("com.", RecordType::NS), Instant::now())
         );
         Ok(())
     }
