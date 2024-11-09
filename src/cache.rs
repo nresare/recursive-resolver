@@ -3,7 +3,7 @@ use crate::target::get_ns_name;
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use lru::LruCache;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
@@ -50,10 +50,16 @@ impl<K: Hash + Eq + Debug, V: Clone + Debug> Cache<K, V> {
 
 pub(crate) type DnsCache = Cache<Query, Vec<Record>>;
 
-#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+#[derive(Hash, Eq, PartialEq, Clone)]
 pub(crate) struct Query {
     pub to_resolve: Name,
     pub record_type: RecordType,
+}
+
+impl Debug for Query {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}/{}", self.to_resolve, self.record_type))
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -406,6 +412,13 @@ mod tests {
             vec![name!("b.c.com"), name!("c.com"), name!("com")],
             parents(&name!("a.b.c.com"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_debug_for_query() -> Result<()> {
+        let query = Query { to_resolve: name!("noa.re."), record_type: RecordType::A };
+        assert_eq!("noa.re./A", format!("{:?}", query));
         Ok(())
     }
 }
