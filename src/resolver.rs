@@ -12,7 +12,7 @@ use thiserror::Error;
 use tracing::{debug, field::Empty, instrument};
 
 use crate::backend::{Backend, UdpBackend};
-use crate::cache::{Cache, DnsCache, Query};
+use crate::cache::{Cache, CacheResponse, DnsCache, Query};
 use crate::resolver::QueryResponse::{Answer, Referral};
 use crate::resolver::ResolutionError::{NxDomain, ServFail};
 use crate::target::{NsProvider, RootsProvider, Target, TargetProvider};
@@ -98,9 +98,6 @@ impl<'a> ResolutionState<'a> {
         depth: u32,
     ) -> Result<Vec<Record>, ResolutionError> {
         let query = Query { to_resolve: to_resolve.clone(), record_type };
-        if let Some(from_cache) = self.cache.get_and_update_ttl(&query, Instant::now()) {
-            return Ok(from_cache);
-        }
 
         if depth > MAX_RECURSION_DEPTH {
             return Err(ServFail(format!(
@@ -114,9 +111,13 @@ impl<'a> ResolutionState<'a> {
         }
         self.seen.push(query_key);
 
-        debug!(hostname = %to_resolve, "Resolving");
         let mut candidates: Box<dyn TargetProvider + Send> =
-            Box::new(RootsProvider::new(&self.resolver.roots));
+            match self.cache.get_best_record(&query, Instant::now()) {
+                CacheResponse::Authoritative(records) => return Ok(records),
+                CacheResponse::Referral(ns, glue) => Box::new(NsProvider::new(ns, glue)),
+                CacheResponse::None => Box::new(RootsProvider::new(&self.resolver.roots)),
+            };
+        debug!(hostname = %to_resolve, "Resolving");
         loop {
             let target = candidates
                 .next()

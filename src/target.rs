@@ -77,7 +77,7 @@ fn find_in_glue(name: &Name, glue: &[Record]) -> Option<IpAddr> {
         .next()
 }
 
-fn get_ns_name(record: &Record) -> Result<&Name, ResolutionError> {
+pub(crate) fn get_ns_name(record: &Record) -> Result<&Name, ResolutionError> {
     if record.record_type() != RecordType::NS {
         return Err(ServFail("Record type not NS".to_string()));
     }
