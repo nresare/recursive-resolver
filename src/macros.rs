@@ -38,3 +38,9 @@ macro_rules! answer {
         msg
     }};
 }
+#[macro_export]
+macro_rules! name {
+    ($name:expr) => {
+        Name::from_str($name)?
+    };
+}
