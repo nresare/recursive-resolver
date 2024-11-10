@@ -1,5 +1,5 @@
 use crate::cache::CacheResponse::{Authoritative, Referral};
-use crate::target::get_ns_name;
+use crate::target::get_name_if_ns;
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use lru::LruCache;
 use std::collections::{HashMap, HashSet};
@@ -128,8 +128,8 @@ impl DnsCache {
     fn fetch_glue(&self, name_servers: &[Record], now: Instant) -> Vec<Record> {
         let mut result = Vec::with_capacity(name_servers.len());
         // The Authority section of a Message can contain non NS records, see #23
-        for ns in name_servers.iter().filter(|r| r.record_type() == RecordType::NS) {
-            if let Ok(name) = get_ns_name(ns) {
+        for ns in name_servers {
+            if let Some(Ok(name)) = get_name_if_ns(ns) {
                 let query = Query { to_resolve: name.clone(), record_type: RecordType::A };
                 if let Some(records) = self.get_and_update_ttl(&query, now) {
                     result.extend(records);
@@ -207,7 +207,7 @@ mod tests {
     use crate::cache::{
         eligible, make_referral_query, parents, update_ttl, Cache, CacheResponse, DnsCache, Query,
     };
-    use crate::{a, ns};
+    use crate::{a, name, ns};
     use anyhow::Result;
     use hickory_proto::rr::{rdata, Name, RData, Record, RecordType};
     use std::collections::HashMap;
@@ -221,11 +221,6 @@ mod tests {
         };
     }
 
-    macro_rules! name {
-        ($name:expr) => {
-            Name::from_str($name)?
-        };
-    }
     #[test]
     fn test_cache() {
         let capacity: NonZeroUsize = NonZeroUsize::new(5).unwrap();
