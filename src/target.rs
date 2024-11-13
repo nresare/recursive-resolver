@@ -100,7 +100,7 @@ pub(crate) fn get_name_if_ns(record: &Record) -> Option<Result<&Name, Resolution
 
 #[cfg(test)]
 mod tests {
-    use crate::target::{find_in_glue, get_name_if_ns, get_target};
+    use crate::target::{find_in_glue, get_name_if_ns, get_target, NsProvider, TargetProvider};
     use crate::{a, name, ns};
     use anyhow::Result;
     use hickory_proto::rr::{rdata, RecordType};
@@ -151,6 +151,15 @@ mod tests {
         r.set_rr_type(RecordType::NS);
         let result = get_target(&r, &Vec::new()).await.unwrap_err();
         assert_eq!("Server failure: inconsistent rdata type", result.to_string());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_ns_provider_next() -> Result<()> {
+        let mut provider =
+            NsProvider::new(vec![ns!("com.", "ns0.com.")], vec![a!("ns0.com.", "7.6.5.4")]);
+        assert!(provider.next().await?.is_some());
+        assert!(provider.next().await?.is_none());
         Ok(())
     }
 }

@@ -55,6 +55,7 @@ pub(crate) struct Query {
     pub record_type: RecordType,
 }
 
+// this helps readability when visualizing traces
 impl Debug for Query {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{}/{}", self.to_resolve, self.record_type))
@@ -63,8 +64,11 @@ impl Debug for Query {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum CacheResponse {
+    /// the AA flag was set on the message containing this answer
     Authoritative(Vec<Record>),
+    /// a non-AA response. This contains it's Authority records and optionally the additional records
     Referral(Vec<Record>, Vec<Record>),
+    /// The cache doesn't hold data about this Query
     None,
 }
 
@@ -139,7 +143,7 @@ impl DnsCache {
         result
     }
 }
-
+/// Finds all the parent zones of the given name, from more to less specific
 fn parents(name: &Name) -> Vec<Name> {
     let mut result = Vec::new();
     // the zero label Name is a special case. Has no parents
@@ -152,6 +156,8 @@ fn parents(name: &Name) -> Vec<Name> {
     result
 }
 
+/// Takes a set of authority or glue records, figure out the keys that would find them and return
+/// a HashMap with Queries for keys and for each value a Vec with all the matching responses
 fn make_referral_query(records: &Vec<Record>) -> HashMap<Query, Vec<Record>> {
     let mut result = HashMap::new();
     if records.is_empty() {
