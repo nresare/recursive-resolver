@@ -29,7 +29,7 @@ pub trait Backend: Debug {
     ) -> Result<Message, ResolutionError>;
 }
 
-/// A Backend implementation that implements the DNS query request/response
+/// A Backend implementation that provides the DNS query request/response
 /// behaviour with UDP messages to a remote host.
 #[derive(Debug)]
 pub struct UdpBackend {
@@ -75,7 +75,7 @@ impl Backend for UdpBackend {
 
         let message = Message::from_bytes(&buf[..read_count])?;
         let span = tracing::Span::current();
-        span.record("otel.status_code", "Ok");
+        span.record("otel.status_code", "Unset");
         span.record("result", format!("{:?}", message));
         span.record("response_code", format!("{}", message.header().response_code()));
         Ok(message)

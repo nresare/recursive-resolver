@@ -19,7 +19,7 @@ use crate::target::{NsProvider, RootsProvider, Target, TargetProvider};
 
 // number of items in the cache
 lazy_static! {
-    static ref CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(8192).unwrap();
+    static ref CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(100_000).unwrap();
 }
 
 #[derive(Debug)]
@@ -124,7 +124,6 @@ impl<'a> ResolutionState<'a> {
                 .await?
                 .ok_or_else(|| ServFail("no more nameservers to try".to_string()))?;
             let target = self.target_to_ip(target, depth).await?;
-            debug!(%target, "Contacting");
             let response = match self.resolver.backend.query(target, to_resolve, record_type).await
             {
                 Err(e) => return Err(e),
@@ -184,6 +183,16 @@ fn is_final(answer: &Message) -> bool {
     answer.header().authoritative() && !answer.answers().is_empty()
 }
 
+fn first_ip(result: &mut Vec<Record>) -> Result<IpAddr, ResolutionError> {
+    match result.pop() {
+        None => Err(ServFail("unexpected empty result".to_string())),
+        Some(record) => match record.data() {
+            Some(RData::A(a)) => Ok(IpAddr::V4(a.0)),
+            _ => Err(ServFail("no rdata, or wrong type of rdata".to_string())),
+        },
+    }
+}
+
 #[cfg(test)]
 mod test {
     use anyhow::Result;
@@ -198,6 +207,13 @@ mod test {
     use crate::fake_backend::FakeBackend;
     use crate::resolver::{is_final, RecursiveResolver, ResolutionError};
     use crate::{a, answer, ns, refer};
+
+    #[ctor::ctor]
+    fn init() {
+        let subscriber = FmtSubscriber::builder().with_max_level(Level::DEBUG).finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("Could not set global default tracing subscriber");
+    }
 
     #[test]
     fn test_is_final() {
@@ -266,22 +282,5 @@ mod test {
         }
 
         Ok(())
-    }
-
-    #[ctor::ctor]
-    fn init() {
-        let subscriber = FmtSubscriber::builder().with_max_level(Level::DEBUG).finish();
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("Could not set global default tracing subscriber");
-    }
-}
-
-fn first_ip(result: &mut Vec<Record>) -> Result<IpAddr, ResolutionError> {
-    match result.pop() {
-        None => Err(ServFail("unexpected empty result".to_string())),
-        Some(record) => match record.data() {
-            Some(RData::A(a)) => Ok(IpAddr::V4(a.0)),
-            _ => Err(ServFail("no rdata, or wrong type of rdata".to_string())),
-        },
     }
 }

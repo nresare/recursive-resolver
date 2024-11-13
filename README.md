@@ -4,14 +4,18 @@ DNS resolver based on the primitives that hickory-dns provides.
 If it works out, I expect to contribute this implementation to 
 the hickory-dns project.
 
-# Todo
+# Current status
 
-- [x] Improve the FakeBackend implementation such that a full successful lookup can be tested
-- [x] Handle cross-referencing delegations
-- [x] Figure out how to have target server appear in traces 
-- [ ] Implement timeouts
-- [ ] Implement caching
-- [ ] Implement running in server mode, accepting incoming requests
+The basic functionality of doing recursive name resolution works in fair weather. There is 
+a cache so performance should not be terrible. There is still quite a todo list:
+
+- [ ] Implement timeouts and resends
+- [ ] IPv6 support
+- [ ] Handling of truncated responses with retry over TCP transport
+- [ ] Some smartness selecting which NS to use for some zone, keeping track of health and performance
+- [ ] Support for listening on multiple interfaces not just a wildcard one
+- [ ] Responding to queries over TCP
+- [ ] DNSSec
 
 # License
 

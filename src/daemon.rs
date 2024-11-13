@@ -6,7 +6,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::ops::Deref;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tracing::debug;
 
 pub async fn daemon(resolver: RecursiveResolver, listen_port: u16) -> anyhow::Result<()> {
     let sock =
@@ -17,7 +16,6 @@ pub async fn daemon(resolver: RecursiveResolver, listen_port: u16) -> anyhow::Re
     let mut buf = [0; MAX_RECEIVE_BUFFER_SIZE];
     loop {
         let (msg, peer) = read_message(r.deref(), &mut buf).await?;
-        debug!("read message {msg}");
         tokio::spawn(handle(r.clone(), msg, peer, resolver.clone()));
     }
 }
